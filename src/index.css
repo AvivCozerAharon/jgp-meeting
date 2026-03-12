@@ -1,0 +1,183 @@
+/* index.css */
+/* Estilos globais do JGP Meeting */
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ─── Reset e base ──────────────────────────────────────────────────────────── */
+
+@layer base {
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+  }
+
+  html {
+    height: 100%;
+    /* Previne seleção de texto em botões e elementos interativos */
+    -webkit-user-select: none;
+    user-select: none;
+  }
+
+  /* Permite seleção apenas em áreas de texto */
+  p,
+  span,
+  .selectable,
+  .font-mono,
+  input,
+  textarea {
+    -webkit-user-select: text;
+    user-select: text;
+  }
+
+  body {
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI",
+      sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+    color: #1e293b;
+    background-color: #f8fafc;
+    /* Renderização de fonte mais suave */
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    /* Remove drag padrão do sistema */
+    -webkit-app-region: no-drag;
+  }
+
+  /* Dark mode base */
+  .dark body {
+    color: #e2e8f0;
+    background-color: #0c0f17;
+  }
+
+  #root {
+    height: 100%;
+    display: flex;
+  }
+}
+
+/* ─── Scrollbar personalizado ───────────────────────────────────────────────── */
+
+@layer utilities {
+  /* Scrollbar minimalista estilo Notion */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: #cbd5e1;
+    border-radius: 3px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: #94a3b8;
+  }
+
+  /* Dark mode scrollbar */
+  .dark ::-webkit-scrollbar-thumb {
+    background: #334155;
+  }
+
+  .dark ::-webkit-scrollbar-thumb:hover {
+    background: #475569;
+  }
+
+  /* Utilitários de linha limitada */
+  .line-clamp-2 {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  .line-clamp-3 {
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+}
+
+/* ─── Animações customizadas ────────────────────────────────────────────────── */
+
+@keyframes wave {
+  0%,
+  100% {
+    transform: scaleY(0.3);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes slideUp {
+  from {
+    transform: translateY(8px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+/* ─── Componentes globais ───────────────────────────────────────────────────── */
+
+@layer components {
+  /* Card base */
+  .card {
+    @apply bg-white border border-surface-100 rounded-2xl shadow-card;
+    @apply dark:bg-surface-800/60 dark:border-surface-700/50 dark:shadow-none;
+  }
+
+  /* Input base */
+  .input-base {
+    @apply w-full px-3 py-2.5 text-sm rounded-xl border border-surface-200;
+    @apply bg-surface-50 text-surface-800;
+    @apply focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent;
+    @apply placeholder:text-surface-300 transition-all;
+    @apply dark:bg-surface-800/80 dark:border-surface-600/50 dark:text-surface-200;
+    @apply dark:placeholder:text-surface-500;
+  }
+
+  /* Botão primário */
+  .btn-primary {
+    @apply flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold;
+    @apply bg-primary-500 text-white shadow-sm;
+    @apply hover:bg-primary-600 hover:shadow transition-all duration-150;
+    @apply focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2;
+    @apply disabled:opacity-60 disabled:cursor-not-allowed;
+    @apply dark:focus:ring-offset-surface-900;
+  }
+
+  /* Botão secundário */
+  .btn-secondary {
+    @apply flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold;
+    @apply border border-surface-200 text-surface-600 bg-white;
+    @apply hover:bg-surface-50 hover:border-surface-300 transition-all duration-150;
+    @apply focus:outline-none focus:ring-2 focus:ring-surface-300 focus:ring-offset-2;
+    @apply disabled:opacity-60 disabled:cursor-not-allowed;
+    @apply dark:bg-surface-800/60 dark:border-surface-600/50 dark:text-surface-300;
+    @apply dark:hover:bg-surface-700/60 dark:hover:border-surface-500/50;
+    @apply dark:focus:ring-surface-600 dark:focus:ring-offset-surface-900;
+  }
+}

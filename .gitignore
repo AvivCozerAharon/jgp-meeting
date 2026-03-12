@@ -1,0 +1,12 @@
+# Rust / Tauri build
+target/
+src-tauri/target/
+
+# debug symbols
+*.pdb
+
+# node
+node_modules/
+
+# logs
+*.log
