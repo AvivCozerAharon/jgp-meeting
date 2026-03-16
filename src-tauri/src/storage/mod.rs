@@ -100,6 +100,18 @@ pub struct AppSettings {
     pub summary_model: String,
     pub chunk_duration_secs: f32,
 
+    /// Provider de transcrição: "openai", "groq", "google_cloud", "local"
+    #[serde(default = "default_transcription_provider")]
+    pub transcription_provider: String,
+
+    /// API key do Groq (para whisper-large-v3-turbo)
+    #[serde(default)]
+    pub groq_api_key: String,
+
+    /// API key do Google Cloud (para Speech-to-Text v1)
+    #[serde(default)]
+    pub google_cloud_api_key: String,
+
     /// Feature 1: amostras com RMS abaixo deste valor são descartadas (não vão ao Whisper)
     pub silence_threshold: f32,
 
@@ -109,7 +121,7 @@ pub struct AppSettings {
     #[serde(default = "default_capture_mic")]
     pub capture_microphone: bool,
 
-    /// Feature 7: usa whisper.cpp local em vez da API OpenAI
+    /// Feature 7: usa whisper.cpp local em vez da API OpenAI (legado — usar transcription_provider="local")
     pub use_local_whisper: bool,
     pub local_whisper_exe: String,   // caminho para whisper-cli.exe
     pub local_whisper_model: String, // ex: "base", "small", ou path do ggml
@@ -120,6 +132,10 @@ pub struct AppSettings {
     /// Feature 13: atalho global para iniciar/parar gravação (ex: "ctrl+shift+r")
     #[serde(default = "default_hotkey")]
     pub global_hotkey: String,
+
+    /// Atalho global para mutar/desmutar microfone (ex: "ctrl+shift+m")
+    #[serde(default = "default_mute_hotkey")]
+    pub mute_mic_hotkey: String,
 
     /// Feature 15: gerar resumo automaticamente ao parar a gravação
     #[serde(default)]
@@ -133,6 +149,44 @@ pub struct AppSettings {
     /// String vazia = microfone padrão do sistema.
     #[serde(default)]
     pub selected_microphone: String,
+
+    /// Ganho automático (AGC) do microfone: normaliza o volume para melhorar transcrição.
+    /// Default true — microfones geralmente têm volume mais baixo que loopback do sistema.
+    #[serde(default = "default_true")]
+    pub mic_auto_gain: bool,
+
+    /// Fator de ganho máximo aplicado ao microfone quando AGC está ativo.
+    /// Valores típicos: 2.0–8.0. Default 4.0 = amplifica até 4x o volume original.
+    #[serde(default = "default_mic_gain")]
+    pub mic_gain_max: f32,
+
+    /// Threshold de silêncio separado para o microfone.
+    /// Default 0.003 — mais sensível que o padrão do sistema (0.005) porque
+    /// microfones tipicamente captam sinal mais fraco.
+    #[serde(default = "default_mic_silence_threshold")]
+    pub mic_silence_threshold: f32,
+
+    /// Duração do chunk de áudio do microfone (em segundos).
+    /// Default 5.0 — menor que o sistema (10s) para chunks mais limpos e
+    /// menos ruído por envio ao Whisper.
+    #[serde(default = "default_mic_chunk_duration")]
+    pub mic_chunk_duration_secs: f32,
+
+    /// Ganho automático (AGC) para o áudio do sistema (loopback).
+    /// Default true — áudio do Teams/Zoom via loopback pode ser muito baixo dependendo
+    /// do volume do Windows, causando chunks descartados como silenciosos.
+    #[serde(default = "default_true")]
+    pub system_auto_gain: bool,
+
+    /// Fator de ganho máximo para o áudio do sistema quando AGC está ativo.
+    /// Default 3.0 — menor que mic (4.0) pois loopback geralmente é menos distorcido.
+    #[serde(default = "default_system_gain")]
+    pub system_gain_max: f32,
+
+    /// Prompt de contexto enviado ao Whisper para melhorar a transcrição.
+    /// Ex: "Reunião de investimentos na JGP, gestora de fundos."
+    #[serde(default)]
+    pub whisper_prompt: String,
 
     // ─── Integração JGRC ──────────────────────────────────────────────────────
     /// URL base do JGRC (ex: "http://localhost:3000")
@@ -149,6 +203,10 @@ pub struct AppSettings {
     #[serde(default = "default_theme")]
     pub theme: String,
 
+    /// Cookie de sessão do JGRC capturado via WebView login
+    #[serde(default)]
+    pub jgrc_session_cookie: String,
+
     // Campos legados — mantidos com serde(default) para não quebrar settings.json existente
     #[serde(default)]
     pub jgrc_token: String,
@@ -162,8 +220,36 @@ fn default_hotkey() -> String {
     "ctrl+shift+r".to_string()
 }
 
+fn default_mute_hotkey() -> String {
+    "ctrl+shift+m".to_string()
+}
+
+fn default_transcription_provider() -> String {
+    "openai".to_string()
+}
+
 fn default_capture_mic() -> bool {
     true
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_mic_gain() -> f32 {
+    4.0
+}
+
+fn default_system_gain() -> f32 {
+    3.0
+}
+
+fn default_mic_silence_threshold() -> f32 {
+    0.003
+}
+
+fn default_mic_chunk_duration() -> f32 {
+    5.0
 }
 
 fn default_theme() -> String {
@@ -183,20 +269,32 @@ impl AppSettings {
             transcription_language: "pt".to_string(),
             summary_model: "gpt-4o-mini".to_string(),
             chunk_duration_secs: 10.0,
-            silence_threshold: 0.005,
+            transcription_provider: "openai".to_string(),
+            groq_api_key: String::new(),
+            google_cloud_api_key: String::new(),
+            silence_threshold: 0.002,
             capture_microphone: true,
             use_local_whisper: false,
             local_whisper_exe: String::new(),
             local_whisper_model: "base".to_string(),
             default_meeting_type: MeetingType::General,
             global_hotkey: "ctrl+shift+r".to_string(),
+            mute_mic_hotkey: "ctrl+shift+m".to_string(),
             auto_summary: false,
             local_models_dir: String::new(),
             selected_microphone: String::new(),
+            mic_auto_gain: true,
+            mic_gain_max: 4.0,
+            mic_silence_threshold: 0.003,
+            mic_chunk_duration_secs: 5.0,
+            system_auto_gain: true,
+            system_gain_max: 3.0,
+            whisper_prompt: String::new(),
             theme: "dark".to_string(),
             jgrc_url: String::new(),
             jgrc_email: String::new(),
             jgrc_password: String::new(),
+            jgrc_session_cookie: String::new(),
             jgrc_token: String::new(),
             jgrc_event_type_id: String::new(),
             jgrc_responsible_id: String::new(),

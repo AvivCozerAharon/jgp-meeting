@@ -67,6 +67,9 @@ fn main() {
             commands::update_meeting_meta,
             // Integração JGRC
             commands::export_to_jgrc,
+            commands::jgrc_open_login,
+            commands::jgrc_check_session,
+            commands::jgrc_get_export_data,
         ])
         .setup(|app| {
             #[cfg(debug_assertions)]
@@ -146,23 +149,40 @@ fn setup_global_shortcut(app: &mut tauri::App) {
     use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
     let settings = storage::load_settings().unwrap_or_default();
-    let hotkey = settings.global_hotkey.clone();
 
-    if hotkey.is_empty() {
-        return;
+    // Atalho de gravação
+    let hotkey = settings.global_hotkey.clone();
+    if !hotkey.is_empty() {
+        let app_handle = app.handle().clone();
+        if let Err(e) = app.global_shortcut().on_shortcut(
+            hotkey.as_str(),
+            move |_app, _s, event| {
+                if event.state() == ShortcutState::Pressed {
+                    let _ = app_handle.emit("toggle-recording", ());
+                }
+            },
+        ) {
+            log::warn!("Falha ao registrar atalho global '{hotkey}': {e}");
+        } else {
+            log::info!("Atalho global '{hotkey}' registrado");
+        }
     }
 
-    let app_handle = app.handle().clone();
-    if let Err(e) = app.global_shortcut().on_shortcut(
-        hotkey.as_str(),
-        move |_app, _s, event| {
-            if event.state() == ShortcutState::Pressed {
-                let _ = app_handle.emit("toggle-recording", ());
-            }
-        },
-    ) {
-        log::warn!("Falha ao registrar atalho global '{hotkey}': {e}");
-    } else {
-        log::info!("Atalho global '{hotkey}' registrado");
+    // Atalho de mute mic
+    let mute_hotkey = settings.mute_mic_hotkey.clone();
+    if !mute_hotkey.is_empty() {
+        let app_handle = app.handle().clone();
+        if let Err(e) = app.global_shortcut().on_shortcut(
+            mute_hotkey.as_str(),
+            move |_app, _s, event| {
+                if event.state() == ShortcutState::Pressed {
+                    let _ = app_handle.emit("toggle-mic-mute", ());
+                }
+            },
+        ) {
+            log::warn!("Falha ao registrar atalho mute mic '{mute_hotkey}': {e}");
+        } else {
+            log::info!("Atalho mute mic '{mute_hotkey}' registrado");
+        }
     }
 }

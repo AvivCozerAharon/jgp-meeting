@@ -1,7 +1,7 @@
 // pages/HistoryPage.tsx
 // Página de histórico de reuniões.
 
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useMemo } from "react";
 import clsx from "clsx";
 import {
   Clock,
@@ -11,7 +11,6 @@ import {
   Calendar,
   AlertCircle,
   X,
-  Users,
   Mail,
   LayoutList,
   Search,
@@ -20,6 +19,8 @@ import {
   Check,
   Upload,
   Save,
+  Mic,
+  Volume2,
 } from "lucide-react";
 import { useMeetingHistory } from "@/hooks/useMeetingHistory";
 import { MeetingCard } from "@/components/MeetingCard";
@@ -27,10 +28,11 @@ import { SummaryPanel } from "@/components/SummaryPanel";
 import { LoadingOverlay } from "@/components/LoadingSpinner";
 import { ExportMenu } from "@/components/ExportMenu";
 import { FollowupEmail } from "@/components/FollowupEmail";
-import { SpeakersPanel } from "@/components/SpeakersPanel";
 import { TranscriptQA } from "@/components/TranscriptQA";
+import { JgrcExportModal } from "@/components/JgrcExportModal";
+import { parseTranscript } from "@/components/TranscriptionPanel";
 import { getSettings, formatMeetingDate, formatMeetingDuration } from "@/services/storageService";
-import type { Meeting, SpeakerSegment, AppSettings } from "@/types";
+import type { Meeting, AppSettings } from "@/types";
 
 export const HistoryPage: React.FC = () => {
   const [state, actions] = useMeetingHistory();
@@ -123,7 +125,7 @@ export const HistoryPage: React.FC = () => {
         ) : meetings.length === 0 ? (
           <EmptyHistory />
         ) : (
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-2 xl:grid-cols-3">
+          <div className="flex flex-col gap-1">
             {meetings.map((meeting) => (
               <MeetingCard
                 key={meeting.id}
@@ -143,7 +145,7 @@ export const HistoryPage: React.FC = () => {
 
 // ─── Vista de Detalhe ──────────────────────────────────────────────────────────
 
-type DetailTab = 'summary' | 'speakers' | 'email' | 'qa';
+type DetailTab = 'summary' | 'email' | 'qa';
 
 interface MeetingDetailViewProps {
   meeting: Meeting;
@@ -164,7 +166,7 @@ const MeetingDetailView: React.FC<MeetingDetailViewProps> = ({
   error,
   onClearError,
   onUpdateMeta,
-  onExportToJgrc,
+  onExportToJgrc: _onExportToJgrc,
 }) => {
   const [tab, setTab] = useState<DetailTab>('summary');
   const [settings, setSettings] = useState<Partial<AppSettings>>({});
@@ -172,10 +174,6 @@ const MeetingDetailView: React.FC<MeetingDetailViewProps> = ({
   const [email, setEmail] = useState<string | null>(
     meeting.summary?.followup_email ?? null
   );
-  const [speakers, setSpeakers] = useState<SpeakerSegment[] | null>(
-    meeting.speakers ?? null
-  );
-
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleValue, setTitleValue] = useState(meeting.title);
   const [isSavingTitle, setIsSavingTitle] = useState(false);
@@ -185,7 +183,7 @@ const MeetingDetailView: React.FC<MeetingDetailViewProps> = ({
   const [transcriptValue, setTranscriptValue] = useState(meeting.transcript);
   const [isSavingTranscript, setIsSavingTranscript] = useState(false);
 
-  const [isExportingJgrc, setIsExportingJgrc] = useState(false);
+  const [jgrcModalOpen, setJgrcModalOpen] = useState(false);
   const [jgrcStatus, setJgrcStatus] = useState<'idle' | 'success' | 'error'>('idle');
   const [jgrcMessage, setJgrcMessage] = useState<string>('');
 
@@ -215,7 +213,7 @@ const MeetingDetailView: React.FC<MeetingDetailViewProps> = ({
 
   const apiKey = settings.openai_api_key ?? "";
   const model = settings.summary_model;
-  const jgrcConfigured = !!(settings.jgrc_url && settings.jgrc_token);
+  const jgrcConfigured = !!settings.jgrc_session_cookie;
 
   const handleTitleSave = async () => {
     const trimmed = titleValue.trim();
@@ -257,20 +255,14 @@ const MeetingDetailView: React.FC<MeetingDetailViewProps> = ({
     setEditingTranscript(false);
   };
 
-  const handleExportJgrc = async () => {
-    setIsExportingJgrc(true);
-    setJgrcStatus('idle');
-    setJgrcMessage('');
-    try {
-      const eventId = await onExportToJgrc(meeting.id);
-      setJgrcStatus('success');
-      setJgrcMessage(`Evento #${eventId} criado no JGRC`);
-    } catch (err) {
-      setJgrcStatus('error');
-      setJgrcMessage(`Erro: ${err}`);
-    } finally {
-      setIsExportingJgrc(false);
-    }
+  const handleExportJgrc = () => {
+    setJgrcModalOpen(true);
+  };
+
+  const handleJgrcExported = (eventId: string) => {
+    setJgrcModalOpen(false);
+    setJgrcStatus('success');
+    setJgrcMessage(`Evento #${eventId} criado no JGRC`);
   };
 
   const alreadyExported = !!(meeting.jgrc_event_id);
@@ -370,22 +362,16 @@ const MeetingDetailView: React.FC<MeetingDetailViewProps> = ({
               <div className="flex flex-col items-end gap-0.5">
                 <button
                   onClick={handleExportJgrc}
-                  disabled={isExportingJgrc}
                   className={clsx(
                     "flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium",
                     "transition-all duration-150 focus:outline-none",
                     alreadyExported
                       ? "text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-500/10 hover:bg-emerald-100 dark:hover:bg-emerald-500/20 border border-emerald-200 dark:border-emerald-500/20"
-                      : "text-white bg-primary-600 hover:bg-primary-700",
-                    isExportingJgrc && "opacity-60 cursor-not-allowed"
+                      : "text-white bg-primary-600 hover:bg-primary-700"
                   )}
                   title={alreadyExported ? "Reenviar para JGRC" : "Exportar para JGRC"}
                 >
-                  {isExportingJgrc ? (
-                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                  ) : (
-                    <Upload className="w-3.5 h-3.5" />
-                  )}
+                  <Upload className="w-3.5 h-3.5" />
                   {alreadyExported ? "Reenviar JGRC" : "Exportar JGRC"}
                 </button>
                 {jgrcStatus === 'success' && (
@@ -480,9 +466,7 @@ const MeetingDetailView: React.FC<MeetingDetailViewProps> = ({
                 placeholder="Nenhuma transcrição disponível. Digite aqui para adicionar..."
               />
             ) : meeting.transcript ? (
-              <p className="text-sm leading-relaxed text-surface-700 dark:text-surface-300 font-mono whitespace-pre-wrap">
-                {meeting.transcript}
-              </p>
+              <TranscriptSegments text={meeting.transcript} />
             ) : (
               <div className="h-full flex items-center justify-center text-surface-400 dark:text-surface-500 text-sm">
                 Sem transcrição disponível
@@ -496,7 +480,6 @@ const MeetingDetailView: React.FC<MeetingDetailViewProps> = ({
           {/* Seletor de abas */}
           <div className="flex bg-white dark:bg-surface-800/60 border border-surface-100 dark:border-surface-700/50 rounded-xl shadow-card dark:shadow-none overflow-hidden flex-shrink-0">
             <TabButton active={tab === 'summary'} onClick={() => setTab('summary')} icon={<LayoutList className="w-3.5 h-3.5" />} label="Resumo" />
-            <TabButton active={tab === 'speakers'} onClick={() => setTab('speakers')} icon={<Users className="w-3.5 h-3.5" />} label="Falantes" />
             <TabButton active={tab === 'email'} onClick={() => setTab('email')} icon={<Mail className="w-3.5 h-3.5" />} label="E-mail" />
             <TabButton active={tab === 'qa'} onClick={() => setTab('qa')} icon={<MessageCircle className="w-3.5 h-3.5" />} label="Perguntas" />
           </div>
@@ -510,18 +493,6 @@ const MeetingDetailView: React.FC<MeetingDetailViewProps> = ({
               canGenerate={!!meeting.transcript}
               className="flex-1 min-h-0"
             />
-          )}
-
-          {tab === 'speakers' && (
-            <div className="flex-1 min-h-0 bg-white dark:bg-surface-800/60 border border-surface-100 dark:border-surface-700/50 rounded-2xl shadow-card dark:shadow-none p-4 overflow-y-auto">
-              <SpeakersPanel
-                meetingId={meeting.id}
-                apiKey={apiKey}
-                model={model}
-                segments={speakers}
-                onDiarized={setSpeakers}
-              />
-            </div>
           )}
 
           {tab === 'email' && (
@@ -548,6 +519,16 @@ const MeetingDetailView: React.FC<MeetingDetailViewProps> = ({
           )}
         </div>
       </div>
+
+      {/* Modal de exportação JGRC */}
+      {jgrcModalOpen && (
+        <JgrcExportModal
+          meeting={meeting}
+          settings={settings}
+          onClose={() => setJgrcModalOpen(false)}
+          onExported={handleJgrcExported}
+        />
+      )}
     </div>
   );
 };
@@ -576,6 +557,61 @@ const TabButton: React.FC<TabButtonProps> = ({ active, onClick, icon, label }) =
     {label}
   </button>
 );
+
+// ─── Transcript Segmentado ────────────────────────────────────────────────────
+
+const TranscriptSegments: React.FC<{ text: string }> = ({ text }) => {
+  const segments = useMemo(() => parseTranscript(text), [text]);
+
+  if (segments.length === 0) return null;
+
+  return (
+    <div className="space-y-2">
+      {segments.map((seg, i) => {
+        if (seg.source === null) {
+          return (
+            <p key={i} className="text-sm leading-relaxed text-surface-700 dark:text-surface-300 whitespace-pre-wrap">
+              {seg.text}
+            </p>
+          );
+        }
+        const isMic = seg.source === "mic";
+        return (
+          <div
+            key={i}
+            className={clsx(
+              "py-2 px-3 rounded-lg",
+              isMic
+                ? "bg-emerald-50/60 dark:bg-emerald-500/5 border-l-2 border-emerald-400 dark:border-emerald-500/40"
+                : "bg-blue-50/60 dark:bg-blue-500/5 border-l-2 border-blue-400 dark:border-blue-500/40"
+            )}
+          >
+            <div className="flex items-center gap-1.5 mb-1">
+              {isMic ? (
+                <>
+                  <Mic className="w-3 h-3 text-emerald-500 dark:text-emerald-400" />
+                  <span className="text-[10px] font-semibold uppercase tracking-wider text-emerald-600 dark:text-emerald-400">
+                    Você
+                  </span>
+                </>
+              ) : (
+                <>
+                  <Volume2 className="w-3 h-3 text-blue-500 dark:text-blue-400" />
+                  <span className="text-[10px] font-semibold uppercase tracking-wider text-blue-600 dark:text-blue-400">
+                    Reunião
+                  </span>
+                </>
+              )}
+            </div>
+            <p className="text-sm leading-relaxed text-surface-700 dark:text-surface-300 whitespace-pre-wrap">
+              {seg.text}
+            </p>
+          </div>
+        );
+      })}
+    </div>
+  );
+};
 
 // ─── Estado Vazio ──────────────────────────────────────────────────────────────
 

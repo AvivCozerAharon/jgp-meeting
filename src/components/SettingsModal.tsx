@@ -23,11 +23,13 @@ import {
   Sparkles,
   Download,
   HardDrive,
+  MessageSquare,
   Link,
-  ExternalLink,
   Sun,
   Moon,
   Monitor,
+  LogIn,
+  Unplug,
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -63,8 +65,11 @@ const CHUNK_DURATIONS = [
   { value: 30, label: "30 segundos (mais econômico)" },
 ];
 
+type SettingsTab = "config" | "shortcuts" | "jgrc";
+
 interface SettingsPanelProps {
   className?: string;
+  activeTab?: SettingsTab;
 }
 
 const THEME_OPTIONS: { value: Theme; label: string; icon: React.ElementType }[] = [
@@ -73,13 +78,16 @@ const THEME_OPTIONS: { value: Theme; label: string; icon: React.ElementType }[] 
   { value: "system", label: "Sistema", icon: Monitor },
 ];
 
-export const SettingsPanel: React.FC<SettingsPanelProps> = ({ className }) => {
+export const SettingsPanel: React.FC<SettingsPanelProps> = ({ className, activeTab = "config" }) => {
   const themeCtx = useTheme();
   const [settings, setSettings] = useState<AppSettings>({
     openai_api_key: "",
     transcription_language: "pt",
     summary_model: "gpt-4o-mini",
     chunk_duration_secs: 10,
+    transcription_provider: "openai",
+    groq_api_key: "",
+    google_cloud_api_key: "",
     silence_threshold: 0.005,
     capture_microphone: true,
     use_local_whisper: false,
@@ -87,13 +95,22 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ className }) => {
     local_whisper_model: "base",
     default_meeting_type: "general",
     global_hotkey: "ctrl+shift+r",
+    mute_mic_hotkey: "ctrl+shift+m",
     auto_summary: false,
     local_models_dir: "",
     selected_microphone: "",
+    mic_auto_gain: true,
+    mic_gain_max: 4,
+    mic_silence_threshold: 0.003,
+    mic_chunk_duration_secs: 5,
+    system_auto_gain: true,
+    system_gain_max: 3,
+    whisper_prompt: "",
     jgrc_url: "",
     jgrc_token: "",
     jgrc_event_type_id: "",
     jgrc_responsible_id: "",
+    jgrc_session_cookie: "",
     theme: "dark",
   });
   const [isLoading, setIsLoading] = useState(true);
@@ -155,6 +172,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ className }) => {
 
   return (
     <div className={clsx("max-w-xl space-y-6", className)}>
+      {activeTab === "config" && (<>
       {/* Aparência / Tema */}
       <SettingSection
         icon={<Sun className="w-4 h-4 text-surface-500 dark:text-surface-400" />}
@@ -181,39 +199,118 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ className }) => {
         </div>
       </SettingSection>
 
-      {/* Chave da API OpenAI */}
+      {/* Provider de Transcrição */}
       <SettingSection
-        icon={<Key className="w-4 h-4 text-surface-500" />}
-        title="Chave da API OpenAI"
-        description="Necessária para transcrição (Whisper) e geração de resumos (GPT). Sua chave é armazenada somente no seu computador."
+        icon={<Cpu className="w-4 h-4 text-surface-500" />}
+        title="Serviço de Transcrição"
+        description="Escolha o serviço usado para transcrever o áudio. Cada um requer sua própria API key."
       >
-        <div className="relative">
-          <input
-            type={showKey ? "text" : "password"}
-            value={settings.openai_api_key}
-            onChange={(e) => updateSetting("openai_api_key", e.target.value)}
-            placeholder="sk-..."
-            className={clsx(
-              "w-full px-3 pr-10 py-2.5 text-sm font-mono rounded-xl border",
-              "border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-800/60 text-surface-800 dark:text-surface-200",
-              "focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent",
-              "placeholder:text-surface-300 dark:placeholder:text-surface-600 transition-all"
-            )}
-          />
-          <button
-            onClick={() => setShowKey((v) => !v)}
-            className="absolute right-3 top-1/2 -translate-y-1/2 text-surface-400 hover:text-surface-600 dark:text-surface-500 dark:hover:text-surface-300 transition-colors"
-          >
-            {showKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-          </button>
-        </div>
-        {settings.openai_api_key && !settings.openai_api_key.startsWith("sk-") && (
-          <p className="text-xs text-amber-600 dark:text-amber-400 mt-1 flex items-center gap-1">
-            <AlertCircle className="w-3 h-3" />
-            Chave inválida: deve começar com "sk-"
-          </p>
-        )}
+        <select
+          value={settings.transcription_provider ?? "openai"}
+          onChange={(e) => updateSetting("transcription_provider", e.target.value)}
+          className={clsx(
+            "w-full px-3 py-2.5 text-sm rounded-xl border",
+            "border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-800/60 text-surface-800 dark:text-surface-200",
+            "focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent",
+            "transition-all appearance-none cursor-pointer"
+          )}
+        >
+          <option value="openai">OpenAI Whisper (whisper-1)</option>
+          <option value="groq">Groq Whisper (large-v3-turbo — rápido)</option>
+          <option value="google_cloud">Google Cloud Speech-to-Text</option>
+          <option value="local">Whisper Local (whisper.cpp)</option>
+        </select>
       </SettingSection>
+
+      {/* API Key — dinâmica conforme provider selecionado */}
+      {(settings.transcription_provider ?? "openai") !== "local" && (
+        <SettingSection
+          icon={<Key className="w-4 h-4 text-surface-500" />}
+          title={
+            (settings.transcription_provider ?? "openai") === "groq"
+              ? "Chave da API Groq"
+              : (settings.transcription_provider ?? "openai") === "google_cloud"
+              ? "Chave da API Google Cloud"
+              : "Chave da API OpenAI"
+          }
+          description={
+            (settings.transcription_provider ?? "openai") === "groq"
+              ? "Crie uma conta gratuita em console.groq.com e gere uma API key."
+              : (settings.transcription_provider ?? "openai") === "google_cloud"
+              ? "Obtenha em console.cloud.google.com → APIs & Services → Credentials."
+              : "Necessária para transcrição (Whisper) e resumos (GPT). Armazenada somente no seu computador."
+          }
+        >
+          <div className="relative">
+            <input
+              type={showKey ? "text" : "password"}
+              value={
+                (settings.transcription_provider ?? "openai") === "groq"
+                  ? (settings.groq_api_key ?? "")
+                  : (settings.transcription_provider ?? "openai") === "google_cloud"
+                  ? (settings.google_cloud_api_key ?? "")
+                  : settings.openai_api_key
+              }
+              onChange={(e) => {
+                const provider = settings.transcription_provider ?? "openai";
+                if (provider === "groq") updateSetting("groq_api_key", e.target.value);
+                else if (provider === "google_cloud") updateSetting("google_cloud_api_key", e.target.value);
+                else updateSetting("openai_api_key", e.target.value);
+              }}
+              placeholder={
+                (settings.transcription_provider ?? "openai") === "groq"
+                  ? "gsk_..."
+                  : (settings.transcription_provider ?? "openai") === "google_cloud"
+                  ? "AIza..."
+                  : "sk-..."
+              }
+              className={clsx(
+                "w-full px-3 pr-10 py-2.5 text-sm font-mono rounded-xl border",
+                "border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-800/60 text-surface-800 dark:text-surface-200",
+                "focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent",
+                "placeholder:text-surface-300 dark:placeholder:text-surface-600 transition-all"
+              )}
+            />
+            <button
+              onClick={() => setShowKey((v) => !v)}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-surface-400 hover:text-surface-600 dark:text-surface-500 dark:hover:text-surface-300 transition-colors"
+            >
+              {showKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+            </button>
+          </div>
+        </SettingSection>
+      )}
+
+      {/* API key OpenAI para resumos (quando provider não é OpenAI) */}
+      {(settings.transcription_provider ?? "openai") !== "openai" &&
+       (settings.transcription_provider ?? "openai") !== "local" && (
+        <SettingSection
+          icon={<Key className="w-4 h-4 text-surface-500" />}
+          title="Chave da API OpenAI (Resumos)"
+          description="Usada para gerar resumos com GPT. Necessária mesmo quando a transcrição usa outro serviço."
+        >
+          <div className="relative">
+            <input
+              type={showKey ? "text" : "password"}
+              value={settings.openai_api_key}
+              onChange={(e) => updateSetting("openai_api_key", e.target.value)}
+              placeholder="sk-..."
+              className={clsx(
+                "w-full px-3 pr-10 py-2.5 text-sm font-mono rounded-xl border",
+                "border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-800/60 text-surface-800 dark:text-surface-200",
+                "focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent",
+                "placeholder:text-surface-300 dark:placeholder:text-surface-600 transition-all"
+              )}
+            />
+            <button
+              onClick={() => setShowKey((v) => !v)}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-surface-400 hover:text-surface-600 dark:text-surface-500 dark:hover:text-surface-300 transition-colors"
+            >
+              {showKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+            </button>
+          </div>
+        </SettingSection>
+      )}
 
       {/* Idioma da transcrição */}
       <SettingSection
@@ -374,36 +471,135 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ className }) => {
             </button>
           )}
         </div>
+
+        {/* ── Configurações avançadas do microfone ── */}
+        {settings.capture_microphone && (
+          <div className="mt-4 space-y-3 pl-3 border-l-2 border-emerald-200 dark:border-emerald-500/30">
+            <p className="text-[10px] uppercase tracking-wider font-semibold text-surface-400 dark:text-surface-500">
+              Qualidade do microfone
+            </p>
+
+            {/* AGC toggle */}
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-xs font-medium text-surface-700 dark:text-surface-300">Ganho Automático (AGC)</p>
+                <p className="text-[10px] text-surface-400 dark:text-surface-500">Amplifica o volume do mic automaticamente</p>
+              </div>
+              <div
+                onClick={() => updateSetting("mic_auto_gain", !settings.mic_auto_gain)}
+                className={clsx(
+                  "relative w-9 h-[18px] rounded-full transition-colors duration-200 cursor-pointer flex-shrink-0",
+                  settings.mic_auto_gain ? "bg-emerald-500" : "bg-surface-200 dark:bg-surface-600"
+                )}
+              >
+                <span
+                  className={clsx(
+                    "absolute top-[2px] left-[2px] w-3.5 h-3.5 bg-white rounded-full shadow transition-transform duration-200",
+                    settings.mic_auto_gain ? "translate-x-[18px]" : "translate-x-0"
+                  )}
+                />
+              </div>
+            </div>
+
+            {/* Ganho máximo (só quando AGC ativo) */}
+            {settings.mic_auto_gain && (
+              <div>
+                <p className="text-xs font-medium text-surface-700 dark:text-surface-300 mb-1">
+                  Ganho máximo: {settings.mic_gain_max?.toFixed(1) ?? '4.0'}x
+                </p>
+                <input
+                  type="range"
+                  min={1.5}
+                  max={10}
+                  step={0.5}
+                  value={settings.mic_gain_max ?? 4}
+                  onChange={(e) => updateSetting("mic_gain_max", parseFloat(e.target.value))}
+                  className="w-full accent-emerald-500"
+                />
+                <div className="flex justify-between text-[10px] text-surface-400 dark:text-surface-500 mt-0.5">
+                  <span>1.5x (sutil)</span>
+                  <span>10x (máximo)</span>
+                </div>
+              </div>
+            )}
+
+            {/* Sensibilidade ao silêncio do mic */}
+            <div>
+              <p className="text-xs font-medium text-surface-700 dark:text-surface-300 mb-1">
+                Sensibilidade do mic: {settings.mic_silence_threshold?.toFixed(3) ?? '0.003'}
+              </p>
+              <input
+                type="range"
+                min={0.001}
+                max={0.03}
+                step={0.001}
+                value={settings.mic_silence_threshold ?? 0.003}
+                onChange={(e) => updateSetting("mic_silence_threshold", parseFloat(e.target.value))}
+                className="w-full accent-emerald-500"
+              />
+              <div className="flex justify-between text-[10px] text-surface-400 dark:text-surface-500 mt-0.5">
+                <span>Mais sensível</span>
+                <span>Menos sensível</span>
+              </div>
+            </div>
+
+            {/* Intervalo de transcrição do mic */}
+            <div>
+              <p className="text-xs font-medium text-surface-700 dark:text-surface-300 mb-1">
+                Intervalo do mic
+              </p>
+              <select
+                value={settings.mic_chunk_duration_secs ?? 5}
+                onChange={(e) => updateSetting("mic_chunk_duration_secs", Number(e.target.value))}
+                className={clsx(
+                  "w-full px-3 py-1.5 text-xs rounded-lg border",
+                  "border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-800/60 text-surface-800 dark:text-surface-200",
+                  "focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent",
+                  "transition-all appearance-none cursor-pointer"
+                )}
+              >
+                <option value={3}>3 segundos (mais rápido)</option>
+                <option value={5}>5 segundos (recomendado)</option>
+                <option value={8}>8 segundos</option>
+                <option value={10}>10 segundos (igual ao sistema)</option>
+              </select>
+              <p className="text-[10px] text-surface-400 dark:text-surface-500 mt-0.5">
+                Chunks menores = menos ruído por envio = transcrição mais precisa
+              </p>
+            </div>
+          </div>
+        )}
       </SettingSection>
 
-      {/* Feature 7: Whisper local */}
+      {/* Prompt de contexto Whisper */}
+      <SettingSection
+        icon={<MessageSquare className="w-4 h-4 text-surface-500" />}
+        title="Prompt de Contexto (Whisper)"
+        description="Texto de contexto enviado ao Whisper para melhorar a transcrição. Inclua nomes de pessoas, empresas, termos técnicos ou jargão relevante."
+      >
+        <textarea
+          value={settings.whisper_prompt ?? ""}
+          onChange={(e) => updateSetting("whisper_prompt", e.target.value)}
+          rows={2}
+          placeholder="Ex: Reunião de investimentos da JGP. Participantes: André, Marcelo, Guilherme. Termos: CDI, FIC FIM, cota, benchmark."
+          className={clsx(
+            "w-full px-3 py-2 text-sm rounded-xl border resize-none",
+            "border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-800/60 text-surface-800 dark:text-surface-200",
+            "focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent",
+            "placeholder:text-surface-400 dark:placeholder:text-surface-600",
+            "transition-all"
+          )}
+        />
+      </SettingSection>
+
+      {/* Feature 7: Whisper local (só aparece quando provider é "local") */}
+      {(settings.transcription_provider ?? "openai") === "local" && (
       <SettingSection
         icon={<Laptop className="w-4 h-4 text-surface-500" />}
-        title="Whisper Local (whisper.cpp)"
-        description="Use um modelo local em vez da API OpenAI para transcrição. Requer whisper.cpp instalado."
+        title="Configuração do Whisper Local"
+        description="Configure o executável whisper-cli.exe e o modelo ggml para transcrição local."
       >
-        <label className="flex items-center gap-3 cursor-pointer mb-3">
-          <div
-            onClick={() => updateSetting("use_local_whisper", !settings.use_local_whisper)}
-            className={clsx(
-              "relative w-10 h-5 rounded-full transition-colors duration-200 cursor-pointer",
-              settings.use_local_whisper ? "bg-primary-500" : "bg-surface-200 dark:bg-surface-600"
-            )}
-          >
-            <span
-              className={clsx(
-                "absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform duration-200",
-                settings.use_local_whisper ? "translate-x-5" : "translate-x-0"
-              )}
-            />
-          </div>
-          <span className="text-sm text-surface-700 dark:text-surface-300">
-            {settings.use_local_whisper ? "Ativado" : "Desativado (usa API OpenAI)"}
-          </span>
-        </label>
-
-        {settings.use_local_whisper && (
-          <div className="space-y-3 pl-3 border-l-2 border-primary-200 dark:border-primary-500/30">
+          <div className="space-y-3">
             {/* Aviso sobre o exe */}
             <div className="flex items-start gap-2 p-2 bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/20 rounded-lg text-xs text-amber-800 dark:text-amber-300">
               <span className="mt-0.5">⚠️</span>
@@ -466,8 +662,8 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ className }) => {
               />
             </div>
           </div>
-        )}
       </SettingSection>
+      )}
 
       {/* Feature 8: Tipo de reunião padrão */}
       <SettingSection
@@ -496,29 +692,6 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ className }) => {
             );
           })}
         </div>
-      </SettingSection>
-
-      {/* Feature 13: Atalho global */}
-      <SettingSection
-        icon={<Keyboard className="w-4 h-4 text-surface-500" />}
-        title="Atalho Global"
-        description="Atalho de teclado global para iniciar/parar a gravação mesmo com o app em segundo plano. Salve e reinicie o app para aplicar."
-      >
-        <input
-          type="text"
-          value={settings.global_hotkey ?? "ctrl+shift+r"}
-          onChange={(e) => updateSetting("global_hotkey", e.target.value)}
-          placeholder="ctrl+shift+r"
-          className={clsx(
-            "w-full px-3 py-2.5 text-sm rounded-xl border font-mono",
-            "border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-800/60 text-surface-800 dark:text-surface-200",
-            "focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent",
-            "placeholder:text-surface-300 dark:placeholder:text-surface-600"
-          )}
-        />
-        <p className="text-xs text-surface-400 dark:text-surface-500 mt-1">
-          Exemplos: ctrl+shift+r · alt+shift+m · ctrl+alt+r
-        </p>
       </SettingSection>
 
       {/* Feature 15: Auto-resumo */}
@@ -551,87 +724,63 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ className }) => {
       {/* Download de modelo Whisper */}
       <WhisperModelDownloader onModelDownloaded={(path) => updateSetting("local_whisper_model", path)} />
 
+      </>)}
+
+      {activeTab === "jgrc" && (<>
       {/* Integração JGRC */}
+      <JgrcConnectionSection
+        jgrcSessionCookie={settings.jgrc_session_cookie ?? ""}
+        onSessionCookie={(cookie) => updateSetting("jgrc_session_cookie", cookie)}
+      />
+      </>)}
+
+      {activeTab === "shortcuts" && (<>
+      {/* Feature 13: Atalho global */}
       <SettingSection
-        icon={<Link className="w-4 h-4 text-surface-500" />}
-        title="Integração JGRC"
-        description="Exporta reuniões como eventos no sistema JGRC (JGP CRM)."
+        icon={<Keyboard className="w-4 h-4 text-surface-500" />}
+        title="Atalho Global"
+        description="Atalho de teclado global para iniciar/parar a gravação mesmo com o app em segundo plano. Salve e reinicie o app para aplicar."
       >
-        <div className="space-y-3">
-          <div>
-            <label className="text-xs font-medium text-surface-600 dark:text-surface-400 mb-1 block flex items-center gap-1.5">
-              <ExternalLink className="w-3.5 h-3.5" />
-              URL base do JGRC
-            </label>
-            <input
-              type="text"
-              value={settings.jgrc_url ?? ""}
-              onChange={(e) => updateSetting("jgrc_url", e.target.value)}
-              placeholder="http://localhost:3000"
-              className={clsx(
-                "w-full px-3 py-2 text-sm rounded-xl border",
-                "border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-800/60 text-surface-800 dark:text-surface-200",
-                "focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent",
-                "placeholder:text-surface-300 dark:placeholder:text-surface-600 font-mono"
-              )}
-            />
-          </div>
-          <div>
-            <label className="text-xs font-medium text-surface-600 dark:text-surface-400 mb-1 block flex items-center gap-1.5">
-              <Key className="w-3.5 h-3.5" />
-              Token de autenticação (Bearer)
-            </label>
-            <input
-              type="password"
-              value={settings.jgrc_token ?? ""}
-              onChange={(e) => updateSetting("jgrc_token", e.target.value)}
-              placeholder="seu-token-compass"
-              className={clsx(
-                "w-full px-3 py-2 text-sm rounded-xl border",
-                "border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-800/60 text-surface-800 dark:text-surface-200",
-                "focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent",
-                "placeholder:text-surface-300 dark:placeholder:text-surface-600 font-mono"
-              )}
-            />
-          </div>
-          <div className="grid grid-cols-2 gap-2">
-            <div>
-              <label className="text-xs font-medium text-surface-600 dark:text-surface-400 mb-1 block">
-                ID Tipo de Evento
-              </label>
-              <input
-                type="text"
-                value={settings.jgrc_event_type_id ?? ""}
-                onChange={(e) => updateSetting("jgrc_event_type_id", e.target.value)}
-                placeholder="10002"
-                className={clsx(
-                  "w-full px-3 py-2 text-sm rounded-xl border",
-                  "border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-800/60 text-surface-800 dark:text-surface-200",
-                  "focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent",
-                  "placeholder:text-surface-300 dark:placeholder:text-surface-600 font-mono"
-                )}
-              />
-            </div>
-            <div>
-              <label className="text-xs font-medium text-surface-600 dark:text-surface-400 mb-1 block">
-                ID Responsável
-              </label>
-              <input
-                type="text"
-                value={settings.jgrc_responsible_id ?? ""}
-                onChange={(e) => updateSetting("jgrc_responsible_id", e.target.value)}
-                placeholder="10001"
-                className={clsx(
-                  "w-full px-3 py-2 text-sm rounded-xl border",
-                  "border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-800/60 text-surface-800 dark:text-surface-200",
-                  "focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent",
-                  "placeholder:text-surface-300 dark:placeholder:text-surface-600 font-mono"
-                )}
-              />
-            </div>
-          </div>
-        </div>
+        <input
+          type="text"
+          value={settings.global_hotkey ?? "ctrl+shift+r"}
+          onChange={(e) => updateSetting("global_hotkey", e.target.value)}
+          placeholder="ctrl+shift+r"
+          className={clsx(
+            "w-full px-3 py-2.5 text-sm rounded-xl border font-mono",
+            "border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-800/60 text-surface-800 dark:text-surface-200",
+            "focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent",
+            "placeholder:text-surface-300 dark:placeholder:text-surface-600"
+          )}
+        />
+        <p className="text-xs text-surface-400 dark:text-surface-500 mt-1">
+          Exemplos: ctrl+shift+r · alt+shift+m · ctrl+alt+r
+        </p>
       </SettingSection>
+
+      {/* Atalho Mutar/Desmutar Microfone */}
+      <SettingSection
+        icon={<Mic className="w-4 h-4 text-surface-500" />}
+        title="Mutar/Desmutar Microfone"
+        description="Atalho global para mutar ou desmutar o microfone durante a gravação."
+      >
+        <input
+          type="text"
+          value={settings.mute_mic_hotkey ?? "ctrl+shift+m"}
+          onChange={(e) => updateSetting("mute_mic_hotkey", e.target.value)}
+          placeholder="ctrl+shift+m"
+          className={clsx(
+            "w-full px-3 py-2.5 text-sm rounded-xl border font-mono",
+            "border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-800/60 text-surface-800 dark:text-surface-200",
+            "focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent",
+            "placeholder:text-surface-300 dark:placeholder:text-surface-600"
+          )}
+        />
+        <p className="text-xs text-surface-400 dark:text-surface-500 mt-1">
+          Exemplos: ctrl+shift+m · alt+m · ctrl+alt+m
+        </p>
+      </SettingSection>
+      </>)}
 
       {/* Botão Salvar */}
       <div className="flex items-center justify-between pt-2">
@@ -704,6 +853,142 @@ const SettingSection: React.FC<SettingSectionProps> = ({
     {children}
   </div>
 );
+
+// ─── Componente de conexão JGRC ───────────────────────────────────────────────
+
+const JGRC_URL = "https://jgrc.jgp.com.br";
+
+interface JgrcConnectionSectionProps {
+  jgrcSessionCookie: string;
+  onSessionCookie: (cookie: string) => void;
+}
+
+const JgrcConnectionSection: React.FC<JgrcConnectionSectionProps> = ({
+  jgrcSessionCookie,
+  onSessionCookie,
+}) => {
+  const [checkingSession, setCheckingSession] = useState(false);
+  const [sessionValid, setSessionValid] = useState<boolean | null>(null);
+  const [connecting, setConnecting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const isConnected = !!jgrcSessionCookie;
+
+  // Verifica se a sessão ainda é válida
+  const checkSession = async () => {
+    if (!jgrcSessionCookie) return;
+    setCheckingSession(true);
+    try {
+      const valid = await invoke<boolean>("jgrc_check_session", {
+        url: JGRC_URL,
+        cookie: jgrcSessionCookie,
+      });
+      setSessionValid(valid);
+    } catch {
+      console.log("Erro ao verificar sessão JGRC, assumindo inválida");
+      setSessionValid(false);
+    } finally {
+      setCheckingSession(false);
+    }
+  };
+
+  useEffect(() => {
+    if (isConnected) {
+      checkSession();
+    }
+  }, [jgrcSessionCookie]);
+
+  const handleDisconnect = () => {
+    onSessionCookie("");
+    setSessionValid(null);
+    setError(null);
+  };
+
+  // Abre janela Tauri para login no JGRC
+  const handleConnect = async () => {
+    setConnecting(true);
+    setError(null);
+    try {
+      const cookie = await invoke<string>("jgrc_open_login", { url: JGRC_URL });
+      if (cookie) {
+        onSessionCookie(cookie);
+      }
+    } catch (err) {
+      console.error("Erro ao abrir login JGRC:", err);
+      setError(String(err));
+    } finally {
+      setConnecting(false);
+    }
+  };
+
+  return (
+    <SettingSection
+      icon={<Link className="w-4 h-4 text-surface-500" />}
+      title="Integração JGRC"
+      description="Conecte-se ao JGRC para exportar reuniões como eventos."
+    >
+      <div className="space-y-3">
+        {/* Status da conexão */}
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div
+              className={clsx(
+                "w-2.5 h-2.5 rounded-full",
+                isConnected && sessionValid !== false
+                  ? "bg-emerald-500 animate-pulse"
+                  : "bg-surface-300 dark:bg-surface-600"
+              )}
+            />
+            <span className="text-xs font-medium text-surface-600 dark:text-surface-400">
+              {checkingSession
+                ? "Verificando..."
+                : isConnected && sessionValid !== false
+                ? "Conectado ao JGRC"
+                : isConnected && sessionValid === false
+                ? "Sessão expirada"
+                : "Desconectado"}
+            </span>
+          </div>
+
+          <div className="flex gap-2">
+            {isConnected && (
+              <button
+                onClick={handleDisconnect}
+                className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors"
+              >
+                <Unplug className="w-3.5 h-3.5" />
+                Desconectar
+              </button>
+            )}
+            <button
+              onClick={handleConnect}
+              disabled={connecting}
+              className={clsx(
+                "flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all",
+                "bg-primary-500 text-white hover:bg-primary-600 shadow-sm",
+                "disabled:opacity-60 disabled:cursor-not-allowed"
+              )}
+            >
+              {connecting ? (
+                <Spinner size="xs" color="white" />
+              ) : (
+                <LogIn className="w-3.5 h-3.5" />
+              )}
+              {connecting ? "Conectando..." : isConnected ? "Reconectar" : "Conectar JGRC"}
+            </button>
+          </div>
+        </div>
+
+        {error && (
+          <div className="flex items-start gap-1.5 p-2 bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/20 rounded-lg">
+            <AlertCircle className="w-3.5 h-3.5 text-red-500 mt-0.5 flex-shrink-0" />
+            <p className="text-xs text-red-700 dark:text-red-400">{error}</p>
+          </div>
+        )}
+      </div>
+    </SettingSection>
+  );
+};
 
 // ─── Componente de download de modelos Whisper ────────────────────────────────
 

@@ -1,9 +1,9 @@
 // components/TranscriptionPanel.tsx
-// Painel de transcrição em tempo real.
+// Painel de transcrição em tempo real com segmentação visual por fonte.
 
-import React, { useEffect, useRef } from "react";
+import React, { useEffect, useRef, useMemo } from "react";
 import clsx from "clsx";
-import { FileText, Copy, Check } from "lucide-react";
+import { FileText, Copy, Check, Mic, Volume2 } from "lucide-react";
 import { ProcessingBadge } from "./LoadingSpinner";
 import { RecordingDot } from "./AudioIndicator";
 
@@ -15,11 +15,123 @@ interface TranscriptionPanelProps {
   className?: string;
 }
 
+// ─── Parser de segmentos ──────────────────────────────────────────────────────
+
+type SegmentSource = "mic" | "system" | null;
+
+interface Segment {
+  source: SegmentSource;
+  text: string;
+}
+
+/**
+ * Divide o texto da transcrição em segmentos baseados nos prefixos [Você] e [Reunião].
+ * Transcrições antigas sem prefixos são retornadas como segmento único sem source.
+ */
+export function parseTranscript(text: string): Segment[] {
+  if (!text.trim()) return [];
+
+  // Split mantendo os delimitadores [Você] e [Reunião]
+  const parts = text.split(/(\[(?:Você|Reunião)\])/);
+  const segments: Segment[] = [];
+
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i];
+
+    if (part === "[Você]") {
+      const nextText = parts[i + 1]?.trim() || "";
+      if (nextText) {
+        segments.push({ source: "mic", text: nextText });
+      }
+      i++; // pula o texto já consumido
+    } else if (part === "[Reunião]") {
+      const nextText = parts[i + 1]?.trim() || "";
+      if (nextText) {
+        segments.push({ source: "system", text: nextText });
+      }
+      i++;
+    } else if (part.trim()) {
+      // Texto sem tag (transcrições antigas ou texto inicial)
+      segments.push({ source: null, text: part.trim() });
+    }
+  }
+
+  return segments;
+}
+
+// ─── Componente de segmento ───────────────────────────────────────────────────
+
+const SegmentBlock: React.FC<{ segment: Segment; isLast: boolean; isCapturing: boolean }> = ({
+  segment,
+  isLast,
+  isCapturing,
+}) => {
+  const { source, text } = segment;
+
+  if (source === null) {
+    // Texto sem tag (transcrições antigas) — renderiza simples
+    return (
+      <div className="py-1">
+        <p className="text-sm leading-relaxed text-surface-700 dark:text-surface-300 whitespace-pre-wrap selection:bg-primary-100 dark:selection:bg-primary-500/30">
+          {text}
+          {isLast && isCapturing && <CursorBlink />}
+        </p>
+      </div>
+    );
+  }
+
+  const isMic = source === "mic";
+
+  return (
+    <div
+      className={clsx(
+        "py-2 px-3 rounded-lg",
+        isMic
+          ? "bg-emerald-50/60 dark:bg-emerald-500/5 border-l-2 border-emerald-400 dark:border-emerald-500/40"
+          : "bg-blue-50/60 dark:bg-blue-500/5 border-l-2 border-blue-400 dark:border-blue-500/40"
+      )}
+    >
+      {/* Badge da fonte */}
+      <div className="flex items-center gap-1.5 mb-1">
+        {isMic ? (
+          <>
+            <Mic className="w-3 h-3 text-emerald-500 dark:text-emerald-400" />
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-emerald-600 dark:text-emerald-400">
+              Você
+            </span>
+          </>
+        ) : (
+          <>
+            <Volume2 className="w-3 h-3 text-blue-500 dark:text-blue-400" />
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-blue-600 dark:text-blue-400">
+              Reunião
+            </span>
+          </>
+        )}
+      </div>
+
+      {/* Texto do segmento */}
+      <p className="text-sm leading-relaxed text-surface-700 dark:text-surface-300 whitespace-pre-wrap selection:bg-primary-100 dark:selection:bg-primary-500/30">
+        {text}
+        {isLast && isCapturing && <CursorBlink />}
+      </p>
+    </div>
+  );
+};
+
+const CursorBlink: React.FC = () => (
+  <span className="inline-block w-0.5 h-4 bg-primary-500 ml-0.5 align-middle animate-pulse" />
+);
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
 function formatTimer(secs: number): string {
   const m = Math.floor(secs / 60).toString().padStart(2, "0");
   const s = (secs % 60).toString().padStart(2, "0");
   return `${m}:${s}`;
 }
+
+// ─── Componente principal ─────────────────────────────────────────────────────
 
 export const TranscriptionPanel: React.FC<TranscriptionPanelProps> = ({
   transcript,
@@ -30,6 +142,8 @@ export const TranscriptionPanel: React.FC<TranscriptionPanelProps> = ({
 }) => {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [copied, setCopied] = React.useState(false);
+
+  const segments = useMemo(() => parseTranscript(transcript), [transcript]);
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -150,13 +264,15 @@ export const TranscriptionPanel: React.FC<TranscriptionPanelProps> = ({
             </div>
           </div>
         ) : (
-          <div className="space-y-0">
-            <p className="text-sm leading-relaxed text-surface-700 dark:text-surface-300 whitespace-pre-wrap font-mono selection:bg-primary-100 dark:selection:bg-primary-500/30">
-              {transcript}
-              {isCapturing && (
-                <span className="inline-block w-0.5 h-4 bg-primary-500 ml-0.5 align-middle animate-pulse" />
-              )}
-            </p>
+          <div className="space-y-2">
+            {segments.map((seg, i) => (
+              <SegmentBlock
+                key={i}
+                segment={seg}
+                isLast={i === segments.length - 1}
+                isCapturing={isCapturing}
+              />
+            ))}
           </div>
         )}
       </div>

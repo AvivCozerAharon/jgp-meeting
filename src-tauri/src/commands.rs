@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::ai::{self, MeetingSummary, SpeakerSegment};
-use crate::audio::{self, AudioCaptureState, AudioChunk};
+use crate::audio::{self, AudioCaptureState, AudioChunk, AudioSource};
 use crate::detection;
 use crate::export;
 use crate::storage::{self, AppSettings, Meeting, MeetingType};
@@ -70,7 +70,7 @@ pub struct MeetingResult {
 
 /// Inicia a captura de áudio + pipeline de transcrição.
 /// Feature 1: usa silence_threshold das configurações.
-/// Feature 5: mistura microfone se capture_microphone=true.
+/// Feature 5: captura microfone em pipeline separada se capture_microphone=true.
 /// Feature 7: usa Whisper local se use_local_whisper=true.
 /// Feature 8: aplica template do tipo de reunião no resumo.
 #[tauri::command]
@@ -86,13 +86,33 @@ pub async fn start_capture(
     let settings = storage::load_settings()
         .map_err(|e| format!("Erro ao carregar configurações: {e}"))?;
 
-    let use_local = settings.use_local_whisper && !settings.local_whisper_exe.is_empty();
+    // Determina o provider de transcrição (compatibilidade: use_local_whisper legado)
+    let provider = if settings.transcription_provider == "local"
+        || (settings.use_local_whisper && !settings.local_whisper_exe.is_empty())
+    {
+        "local"
+    } else {
+        settings.transcription_provider.as_str()
+    };
 
-    if !use_local && settings.openai_api_key.is_empty() {
-        return Err(
-            "Chave da API OpenAI não configurada. Configure nas Configurações.".to_string(),
-        );
+    // Valida API key do provider selecionado
+    match provider {
+        "openai" if settings.openai_api_key.is_empty() => {
+            return Err("Chave da API OpenAI não configurada.".to_string());
+        }
+        "groq" if settings.groq_api_key.is_empty() => {
+            return Err("Chave da API Groq não configurada.".to_string());
+        }
+        "google_cloud" if settings.google_cloud_api_key.is_empty() => {
+            return Err("Chave da API Google Cloud não configurada.".to_string());
+        }
+        "local" if settings.local_whisper_exe.is_empty() => {
+            return Err("Executável whisper-cli não configurado.".to_string());
+        }
+        _ => {}
     }
+
+    let use_local = provider == "local";
 
     // Inicializa reunião com o tipo selecionado
     let mut meeting = Meeting::new();
@@ -113,23 +133,39 @@ pub async fn start_capture(
     let (stop_tx, stop_rx) = mpsc::channel::<()>();
     *state.stop_tx.lock().unwrap() = Some(stop_tx);
 
-    // Inicia captura de áudio (Feature 1: threshold, Feature 5: mic, mic selecionado)
+    // Inicia captura de áudio (Feature 1: threshold, Feature 5: mic com config separado)
     let capture_arc = Arc::clone(&state.capture_state);
+    let system_config = audio::SystemConfig {
+        chunk_duration_secs: settings.chunk_duration_secs,
+        silence_threshold: settings.silence_threshold,
+        auto_gain: settings.system_auto_gain,
+        gain_max: settings.system_gain_max,
+    };
+    let mic_config = audio::MicConfig {
+        enabled: settings.capture_microphone,
+        device_id: settings.selected_microphone.clone(),
+        chunk_duration_secs: settings.mic_chunk_duration_secs,
+        silence_threshold: settings.mic_silence_threshold,
+        auto_gain: settings.mic_auto_gain,
+        gain_max: settings.mic_gain_max,
+    };
     audio::start_capture(
         capture_arc,
         chunk_tx,
-        settings.chunk_duration_secs,
-        settings.silence_threshold,        // Feature 1
-        settings.capture_microphone,       // Feature 5
-        settings.selected_microphone.clone(), // ID do microfone selecionado (vazio = padrão)
+        system_config,
+        mic_config,
     )
     .map_err(|e| format!("Erro ao iniciar captura: {e}"))?;
 
     // Clona dados necessários para o worker
+    let provider_str     = provider.to_string();
     let api_key          = settings.openai_api_key.clone();
+    let groq_key         = settings.groq_api_key.clone();
+    let gcloud_key       = settings.google_cloud_api_key.clone();
     let language         = settings.transcription_language.clone();
     let whisper_exe      = settings.local_whisper_exe.clone();
     let whisper_model    = settings.local_whisper_model.clone();
+    let whisper_prompt   = settings.whisper_prompt.clone();
     let app_clone        = app.clone();
 
     // Worker de transcrição
@@ -143,22 +179,29 @@ pub async fn start_capture(
     //   4. Processa sequencialmente com indicador de progresso
     //   5. Re-salva a reunião com a transcrição completa
     tokio::spawn(async move {
-        log::info!("Worker de transcrição iniciado (local={})", use_local);
+        log::info!("Worker de transcrição iniciado (provider={})", provider_str);
 
         /// Helper: transcreve um chunk e acumula no transcript global.
         /// Retorna true se obteve texto não-vazio.
+        #[allow(clippy::too_many_arguments)]
         async fn process_chunk(
             chunk: AudioChunk,
-            use_local: bool,
+            provider: &str,
             whisper_exe: &str,
             whisper_model: &str,
             language: &str,
             api_key: &str,
+            groq_key: &str,
+            gcloud_key: &str,
+            whisper_prompt: &str,
             app: &AppHandle,
         ) -> bool {
             let _ = app.emit("transcription-processing", true);
 
-            let wav_bytes = if use_local {
+            // Google Cloud e local precisam de WAV mono 16kHz; OpenAI/Groq aceitam qualquer formato
+            let needs_whisper_format = provider == "local" || provider == "google_cloud";
+
+            let wav_bytes = if needs_whisper_format {
                 match chunk.to_wav_bytes_whisper() {
                     Ok(b) => b,
                     Err(e) => {
@@ -178,10 +221,22 @@ pub async fn start_capture(
                 }
             };
 
-            let result = if use_local {
-                transcription::transcribe_local(wav_bytes, whisper_exe, whisper_model, language).await
-            } else {
-                transcription::transcribe_audio(wav_bytes, api_key, Some(language)).await
+            let prompt_opt = if whisper_prompt.is_empty() { None } else { Some(whisper_prompt) };
+
+            let result = match provider {
+                "groq" => {
+                    transcription::transcribe_groq(wav_bytes, groq_key, Some(language), prompt_opt).await
+                }
+                "google_cloud" => {
+                    transcription::transcribe_google_cloud(wav_bytes, gcloud_key, Some(language)).await
+                }
+                "local" => {
+                    transcription::transcribe_local(wav_bytes, whisper_exe, whisper_model, language).await
+                }
+                _ => {
+                    // "openai" ou qualquer outro → OpenAI Whisper
+                    transcription::transcribe_audio(wav_bytes, api_key, Some(language), prompt_opt).await
+                }
             };
 
             let got_text = match result {
@@ -191,6 +246,29 @@ pub async fn start_capture(
                     if !transcript.is_empty() {
                         transcript.push(' ');
                     }
+                    // Prefixa com a fonte do áudio (deduplica se igual ao último)
+                    let prefix = match chunk.source {
+                        AudioSource::System => "[Reunião]",
+                        AudioSource::Microphone => "[Você]",
+                    };
+
+                    let last_tag = {
+                        let pos_reuniao = transcript.rfind("[Reunião]");
+                        let pos_voce = transcript.rfind("[Você]");
+                        match (pos_reuniao, pos_voce) {
+                            (Some(r), Some(v)) => {
+                                if r > v { Some("[Reunião]") } else { Some("[Você]") }
+                            }
+                            (Some(_), None) => Some("[Reunião]"),
+                            (None, Some(_)) => Some("[Você]"),
+                            (None, None) => None,
+                        }
+                    };
+
+                    if last_tag != Some(prefix) {
+                        transcript.push_str(prefix);
+                    }
+                    transcript.push(' ');
                     transcript.push_str(&text);
                     let full = transcript.clone();
                     drop(transcript);
@@ -198,7 +276,7 @@ pub async fn start_capture(
                     true
                 }
                 Ok(_) => {
-                    log::debug!("Chunk transcrito como vazio");
+                    log::debug!("Chunk transcrito como vazio (source={:?})", chunk.source);
                     false
                 }
                 Err(e) => {
@@ -224,9 +302,10 @@ pub async fn start_capture(
             match chunk_rx.recv_timeout(std::time::Duration::from_millis(200)) {
                 Ok(chunk) => {
                     process_chunk(
-                        chunk, use_local,
+                        chunk, &provider_str,
                         &whisper_exe, &whisper_model, &language, &api_key,
-                        &app_clone,
+                        &groq_key, &gcloud_key,
+                        &whisper_prompt, &app_clone,
                     ).await;
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => continue,
@@ -275,9 +354,10 @@ pub async fn start_capture(
 
             for (i, drain_chunk) in pre_drain.into_iter().enumerate() {
                 process_chunk(
-                    drain_chunk, use_local,
+                    drain_chunk, &provider_str,
                     &whisper_exe, &whisper_model, &language, &api_key,
-                    &app_clone,
+                    &groq_key, &gcloud_key,
+                    &whisper_prompt, &app_clone,
                 ).await;
 
                 let remaining = total - (i + 1);
@@ -748,15 +828,179 @@ pub async fn jgrc_get_form_data() -> Result<JgrcFormData, String> {
     })
 }
 
+/// Dados do usuário logado no JGRC
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct JgrcUser {
+    pub id: i64,
+    pub name: String,
+    pub email: String,
+}
+
+/// Cliente (company) com contagem de eventos
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct JgrcManager {
+    pub id: String,
+    pub name: String,
+    pub qtd_events: i64,
+}
+
+/// Dados completos para a tela de exportação
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct JgrcExportData {
+    pub user: JgrcUser,
+    pub event_types: Vec<JgrcSelectOption>,
+    pub responsibles: Vec<JgrcSelectOption>,
+    pub internal_attendees: Vec<JgrcSelectOption>,
+    pub managers: Vec<JgrcManager>,
+    pub cities: Vec<JgrcSelectOption>,
+}
+
+/// Busca dados do formulário de evento via API JSON do JGRC.
+/// Requer sessão autenticada (cookie salvo).
+/// Retorna: user info + event_types + responsibles
+#[tauri::command]
+pub async fn jgrc_get_export_data() -> Result<JgrcExportData, String> {
+    let settings =
+        storage::load_settings().map_err(|e| format!("Erro ao carregar configurações: {e}"))?;
+
+    let base_url = if settings.jgrc_url.is_empty() {
+        JGRC_DEFAULT_URL.to_string()
+    } else {
+        settings.jgrc_url.clone()
+    };
+    let base_url = base_url.trim_end_matches('/');
+
+    if settings.jgrc_session_cookie.is_empty() {
+        return Err("Não conectado ao JGRC. Faça login na aba Integração JGRC.".to_string());
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|e| format!("Erro HTTP: {e}"))?;
+
+    let resp = client
+        .get(&format!("{base_url}/api/event_form_data"))
+        .header("Cookie", format!("_jgrc_session={}", settings.jgrc_session_cookie))
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .map_err(|e| format!("Erro ao conectar ao JGRC: {e}"))?;
+
+    if resp.status() == reqwest::StatusCode::UNAUTHORIZED || resp.status().is_redirection() {
+        return Err("Sessão JGRC expirada. Reconecte na aba Integração JGRC.".to_string());
+    }
+
+    if !resp.status().is_success() {
+        return Err(format!("JGRC retornou erro {}", resp.status()));
+    }
+
+    let json: serde_json::Value = resp.json().await
+        .map_err(|e| format!("Erro ao ler resposta JSON: {e}"))?;
+
+    // Parse user
+    let user = JgrcUser {
+        id: json["user"]["id"].as_i64().unwrap_or(0),
+        name: json["user"]["name"].as_str().unwrap_or("").to_string(),
+        email: json["user"]["email"].as_str().unwrap_or("").to_string(),
+    };
+
+    // Parse event_types
+    let event_types: Vec<JgrcSelectOption> = json["event_types"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .map(|v| JgrcSelectOption {
+                    id: v["id"].as_i64().map(|n| n.to_string()).unwrap_or_default(),
+                    name: v["name"].as_str().unwrap_or("").to_string(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Parse responsibles
+    let responsibles: Vec<JgrcSelectOption> = json["responsibles"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .map(|v| JgrcSelectOption {
+                    id: v["id"].as_i64().map(|n| n.to_string()).unwrap_or_default(),
+                    name: v["name"].as_str().unwrap_or("").to_string(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Parse internal_attendees (Participantes JGP)
+    let internal_attendees: Vec<JgrcSelectOption> = json["internal_attendees"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .map(|v| JgrcSelectOption {
+                    id: v["id"].as_i64().map(|n| n.to_string()).unwrap_or_default(),
+                    name: v["name"].as_str().unwrap_or("").to_string(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Parse managers (Cliente - Qtd Eventos)
+    let managers: Vec<JgrcManager> = json["managers"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .map(|v| JgrcManager {
+                    id: v["id"].as_i64().map(|n| n.to_string()).unwrap_or_default(),
+                    name: v["name"].as_str().unwrap_or("").to_string(),
+                    qtd_events: v["qtd_events"].as_i64().unwrap_or(0),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Parse cities
+    let cities: Vec<JgrcSelectOption> = json["cities"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .map(|v| JgrcSelectOption {
+                    id: v["id"].as_i64().map(|n| n.to_string()).unwrap_or_default(),
+                    name: v["name"].as_str().unwrap_or("").to_string(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    log::info!("JGRC export data: user={}, {} event_types, {} responsibles, {} attendees, {} managers",
+        user.name, event_types.len(), responsibles.len(), internal_attendees.len(), managers.len());
+
+    Ok(JgrcExportData {
+        user,
+        event_types,
+        responsibles,
+        internal_attendees,
+        managers,
+        cities,
+    })
+}
+
 /// Exporta uma reunião para o JGRC criando um novo evento.
 ///
-/// Recebe `event_type_id` e `responsible_id` selecionados pelo usuário no modal.
-/// Usa email/senha das configurações para autenticação (sessão com cookies).
+/// Usa o endpoint `/api/create_event` do JGRC que:
+///   - Pula verificação CSRF (skip_before_action :verify_authenticity_token)
+///   - Autentica via cookie de sessão
+///   - Retorna JSON diretamente
 #[tauri::command]
 pub async fn export_to_jgrc(
     meeting_id: String,
-    event_type_id: String,
-    responsible_id: String,
+    event_type_id: Option<String>,
+    responsible_id: Option<String>,
+    subject: Option<String>,
+    actions: Option<String>,
+    manager_id: Option<String>,
+    attendees: Option<String>,
+    internal_attendee_ids: Option<Vec<String>>,
+    city_id: Option<String>,
 ) -> Result<String, String> {
     let meeting =
         storage::load_meeting(&meeting_id).map_err(|e| format!("Reunião não encontrada: {e}"))?;
@@ -764,85 +1008,101 @@ pub async fn export_to_jgrc(
     let settings =
         storage::load_settings().map_err(|e| format!("Erro ao carregar configurações: {e}"))?;
 
-    if settings.jgrc_url.is_empty() {
-        return Err("URL do JGRC não configurada.".to_string());
+    let jgrc_url = if settings.jgrc_url.is_empty() {
+        JGRC_DEFAULT_URL.to_string()
+    } else {
+        settings.jgrc_url.clone()
+    };
+    let base_url = jgrc_url.trim_end_matches('/');
+
+    if settings.jgrc_session_cookie.is_empty() {
+        return Err("Não conectado ao JGRC. Faça login na aba Integração JGRC.".to_string());
     }
 
-    let base_url = settings.jgrc_url.trim_end_matches('/');
     let content = build_jgrc_content(&meeting);
     let event_date = meeting.started_at.format("%Y-%m-%d").to_string();
 
     let client = reqwest::Client::builder()
-        .cookie_store(true)
-        .redirect(reqwest::redirect::Policy::limited(10))
         .timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(|e| format!("Erro HTTP: {e}"))?;
 
-    // ── Login ─────────────────────────────────────────────────────────────────
-    let login_page = client
-        .get(&format!("{base_url}/log_in"))
-        .send()
-        .await
-        .map_err(|e| format!("Erro ao conectar: {e}"))?
-        .text()
-        .await
-        .map_err(|e| format!("Erro: {e}"))?;
+    // ── Monta o form para POST /api/create_event ─────────────────────────────
+    // Usa Vec de tuples para suportar array params (internal_attendee_ids[])
+    let mut form: Vec<(String, String)> = Vec::new();
+    let event_subject = subject.filter(|s| !s.is_empty()).unwrap_or(meeting.title.clone());
+    form.push(("event[subject]".into(), event_subject));
+    form.push(("event[content]".into(), content));
+    form.push(("event[event_date]".into(), event_date));
 
-    let login_csrf = extract_csrf_token(&login_page)
-        .ok_or("CSRF não encontrado na página de login.")?;
-
-    let mut login_form = std::collections::HashMap::new();
-    login_form.insert("email", settings.jgrc_email.as_str());
-    login_form.insert("password", settings.jgrc_password.as_str());
-    login_form.insert("authenticity_token", login_csrf.as_str());
-
-    client
-        .post(&format!("{base_url}/sessions"))
-        .form(&login_form)
-        .send()
-        .await
-        .map_err(|e| format!("Erro no login: {e}"))?;
-
-    // ── GET /events/new para CSRF do formulário ───────────────────────────────
-    let events_html = client
-        .get(&format!("{base_url}/events/new"))
-        .send()
-        .await
-        .map_err(|e| format!("Erro: {e}"))?
-        .text()
-        .await
-        .map_err(|e| format!("Erro: {e}"))?;
-
-    let csrf_token = extract_csrf_token(&events_html)
-        .ok_or("CSRF não encontrado. Sessão pode ter expirado.")?;
-
-    // ── POST /events → cria o evento ──────────────────────────────────────────
-    let mut form = std::collections::HashMap::new();
-    form.insert("event[subject]".to_string(), meeting.title.clone());
-    form.insert("event[content]".to_string(), content);
-    form.insert("event[event_date]".to_string(), event_date);
-
-    if !event_type_id.is_empty() {
-        form.insert("event[event_type_id]".to_string(), event_type_id);
+    if let Some(ref eti) = event_type_id {
+        if !eti.is_empty() {
+            form.push(("event[event_type_id]".into(), eti.clone()));
+        }
     }
-    if !responsible_id.is_empty() {
-        form.insert("event[responsible_id]".to_string(), responsible_id);
+    if let Some(ref rid) = responsible_id {
+        if !rid.is_empty() {
+            form.push(("event[responsible_id]".into(), rid.clone()));
+        }
+    }
+    if let Some(ref act) = actions {
+        if !act.is_empty() {
+            form.push(("event[actions]".into(), act.clone()));
+        }
+    }
+    if let Some(ref mid) = manager_id {
+        if !mid.is_empty() {
+            form.push(("event[manager_id]".into(), mid.clone()));
+        }
+    }
+    if let Some(ref att) = attendees {
+        if !att.is_empty() {
+            form.push(("event[attendees]".into(), att.clone()));
+        }
+    }
+    if let Some(ref cid) = city_id {
+        if !cid.is_empty() {
+            form.push(("event[city_id]".into(), cid.clone()));
+        }
+    }
+    if let Some(ref ids) = internal_attendee_ids {
+        for id in ids.iter() {
+            if !id.is_empty() {
+                form.push(("event[internal_attendee_ids][]".into(), id.clone()));
+            }
+        }
     }
 
+    // ── POST /api/create_event ───────────────────────────────────────────────
     let response = client
-        .post(&format!("{base_url}/events.json"))
-        .header("X-CSRF-Token", &csrf_token)
+        .post(&format!("{base_url}/api/create_event"))
+        .header("Cookie", format!("_jgrc_session={}", settings.jgrc_session_cookie))
         .header("Accept", "application/json")
         .form(&form)
-        .send()
-        .await
+        .send().await
         .map_err(|e| format!("Erro ao criar evento: {e}"))?;
 
     let status = response.status();
     let body = response.text().await.unwrap_or_default();
 
+    if status == reqwest::StatusCode::UNAUTHORIZED {
+        return Err("Sessão JGRC expirada. Reconecte na aba Integração JGRC.".to_string());
+    }
+
     if !status.is_success() {
+        // Tenta extrair mensagem de erro amigável do JSON
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
+            if let Some(errors) = json["errors"].as_array() {
+                let msg = errors.iter()
+                    .filter_map(|e| e.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return Err(format!("Erro ao criar evento: {msg}"));
+            }
+            if let Some(err) = json["error"].as_str() {
+                return Err(format!("Erro: {err}"));
+            }
+        }
         return Err(format!("JGRC retornou erro {status}: {body}"));
     }
 
@@ -967,6 +1227,215 @@ fn extract_select_options(html: &str, select_id: &str) -> Vec<JgrcSelectOption> 
     options
 }
 
+// ─── JGRC: Login via WebView ──────────────────────────────────────────────────
+
+/// URL fixa do JGRC
+const JGRC_DEFAULT_URL: &str = "https://jgrc.jgp.com.br";
+
+/// Abre uma janela WebView para o usuário fazer login no JGRC.
+/// Após o login, detecta a navegação para fora de /log_in e /sessions,
+/// tenta extrair o cookie `_jgrc_session` via JavaScript e retorna.
+#[tauri::command]
+pub async fn jgrc_open_login(url: String, app: AppHandle) -> Result<String, String> {
+    let base_url = if url.is_empty() {
+        JGRC_DEFAULT_URL.to_string()
+    } else {
+        url.trim_end_matches('/').to_string()
+    };
+    let login_url = format!("{base_url}/log_in");
+
+    // Canal mpsc para receber mensagens do on_navigation
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(10);
+    let tx_nav = tx.clone();
+    let tx_cookie = tx.clone();
+
+    let base_for_nav = base_url.clone();
+
+    // Se já existe uma janela de login aberta, fecha antes de abrir nova
+    if let Some(existing) = app.get_webview_window("jgrc-login") {
+        let _ = existing.close();
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    }
+
+    // Cria janela WebView para login com handler de navegação
+    let webview_window = tauri::WebviewWindowBuilder::new(
+        &app,
+        "jgrc-login",
+        tauri::WebviewUrl::External(login_url.parse().map_err(|e| format!("URL inválida: {e}"))?),
+    )
+    .title("Login JGRC")
+    .inner_size(900.0, 700.0)
+    .center()
+    .resizable(true)
+    .on_navigation(move |nav_url: &tauri::Url| {
+        let url_str = nav_url.as_str();
+        log::info!("JGRC WebView navegou para: {url_str}");
+
+        // Intercepta URL de callback com o cookie
+        if url_str.starts_with("http://jgrc-cookie-callback/") {
+            let cookie_val = url_str
+                .strip_prefix("http://jgrc-cookie-callback/")
+                .unwrap_or("")
+                .to_string();
+            let _ = tx_cookie.try_send(format!("cookie:{cookie_val}"));
+            return false; // bloqueia a navegação real
+        }
+
+        // Detecta sucesso do login (saiu da página de login/sessions)
+        let is_login_page = url_str.contains("/log_in")
+            || url_str.contains("/sessions")
+            || url_str.contains("/token_validate");
+
+        if !is_login_page && url_str.starts_with(&base_for_nav) {
+            let _ = tx_nav.try_send("login_success".to_string());
+        }
+        true
+    })
+    .build()
+    .map_err(|e| format!("Erro ao criar janela de login: {e}"))?;
+
+    let window_ref = webview_window.clone();
+    let window_timeout = webview_window.clone();
+
+    // Espera login + extração do cookie com timeout de 5 minutos
+    let result = tokio::select! {
+        cookie = async {
+            // 1) Espera o sinal de login_success
+            loop {
+                match rx.recv().await {
+                    Some(msg) if msg == "login_success" => break,
+                    Some(_) => continue,
+                    None => return "error:channel_closed".to_string(),
+                }
+            }
+
+            // 2) Delay para cookies serem setados
+            tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+
+            // 3) Injeta JS para extrair cookie e navegar para URL de callback
+            let cookie_js = r#"
+                (function() {
+                    var cookies = document.cookie.split(';');
+                    var session = '';
+                    for (var i = 0; i < cookies.length; i++) {
+                        var c = cookies[i].trim();
+                        if (c.startsWith('_jgrc_session=')) {
+                            session = c.substring('_jgrc_session='.length);
+                            break;
+                        }
+                    }
+                    window.location.href = 'http://jgrc-cookie-callback/' + encodeURIComponent(session || '__empty__');
+                })();
+            "#;
+
+            if let Err(e) = window_ref.eval(cookie_js) {
+                log::error!("Erro ao executar JS de extração de cookie: {e}");
+                return "error:eval_failed".to_string();
+            }
+
+            // 4) Espera callback com o cookie (timeout 5s)
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                async {
+                    loop {
+                        match rx.recv().await {
+                            Some(msg) if msg.starts_with("cookie:") => {
+                                return msg.strip_prefix("cookie:").unwrap_or("").to_string();
+                            }
+                            Some(_) => continue,
+                            None => return String::new(),
+                        }
+                    }
+                }
+            ).await {
+                Ok(cookie) => cookie,
+                Err(_) => "__empty__".to_string(),
+            }
+        } => cookie,
+        _ = tokio::time::sleep(std::time::Duration::from_secs(300)) => {
+            let _ = window_timeout.close();
+            return Err("Timeout: login não concluído em 5 minutos.".to_string());
+        }
+    };
+
+    // Fecha a janela de login
+    let _ = webview_window.close();
+
+    // Processa o resultado
+    if result.starts_with("error:") {
+        return Err(format!("Erro no login JGRC: {result}"));
+    }
+
+    // Salva o cookie (ou marcador de autenticação) nas configurações
+    let mut settings = storage::load_settings().map_err(|e| format!("Erro: {e}"))?;
+    settings.jgrc_url = base_url;
+
+    if !result.is_empty() && result != "__empty__" && result != "%5F%5Fempty%5F%5F" {
+        // Cookie extraído com sucesso (cookie não é HttpOnly)
+        let decoded = percent_decode_simple(&result);
+        settings.jgrc_session_cookie = decoded.clone();
+        storage::save_settings(&settings).map_err(|e| format!("Erro ao salvar: {e}"))?;
+        log::info!("Cookie JGRC capturado com sucesso");
+        Ok(decoded)
+    } else {
+        // Cookie é HttpOnly — marca como autenticado
+        settings.jgrc_session_cookie = "authenticated".to_string();
+        storage::save_settings(&settings).map_err(|e| format!("Erro ao salvar: {e}"))?;
+        log::info!("Login JGRC concluído (cookie HttpOnly, marcado como autenticado)");
+        Ok("authenticated".to_string())
+    }
+}
+
+/// Decodificação simples de percent-encoding (para cookies na URL de callback)
+fn percent_decode_simple(input: &str) -> String {
+    let mut result = String::with_capacity(input.len());
+    let mut chars = input.chars();
+    while let Some(c) = chars.next() {
+        if c == '%' {
+            let hex: String = chars.by_ref().take(2).collect();
+            if let Ok(byte) = u8::from_str_radix(&hex, 16) {
+                result.push(byte as char);
+            } else {
+                result.push('%');
+                result.push_str(&hex);
+            }
+        } else {
+            result.push(c);
+        }
+    }
+    result
+}
+
+/// Verifica se o cookie de sessão do JGRC ainda é válido.
+/// Faz um GET na home do JGRC e verifica se não redireciona para login.
+#[tauri::command]
+pub async fn jgrc_check_session(url: String, cookie: String) -> Result<bool, String> {
+    if url.is_empty() || cookie.is_empty() {
+        return Ok(false);
+    }
+
+    let base_url = url.trim_end_matches('/');
+
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none()) // Não seguir redirects
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("Erro HTTP: {e}"))?;
+
+    let resp = client
+        .get(&format!("{base_url}/events"))
+        .header("Cookie", format!("_jgrc_session={cookie}"))
+        .send()
+        .await
+        .map_err(|e| format!("Erro ao verificar sessão: {e}"))?;
+
+    let status = resp.status();
+
+    // Se retornou 200, a sessão é válida
+    // Se retornou 302 (redirect para login), a sessão expirou
+    Ok(status.is_success())
+}
+
 // ─── Feature 12: Detecção de apps ────────────────────────────────────────────
 
 /// Retorna a lista de apps de reunião detectados em execução no sistema.
@@ -1006,12 +1475,16 @@ pub async fn save_settings(settings: AppSettings) -> Result<(), String> {
 
 // ─── Feature 13: Atalho global ────────────────────────────────────────────────
 
-/// Registra (ou atualiza) o atalho global de iniciar/parar gravação.
-/// Remove todos os atalhos existentes antes de registrar o novo.
+/// Registra (ou atualiza) os atalhos globais.
+/// Remove todos os atalhos existentes antes de registrar os novos.
+///
+/// - `shortcut`: atalho para toggle gravação (emite `toggle-recording`)
+/// - `mute_shortcut`: atalho para mutar/desmutar mic (emite `toggle-mic-mute`)
 #[tauri::command]
 pub async fn register_global_shortcut(
     app: AppHandle,
     shortcut: String,
+    mute_shortcut: Option<String>,
 ) -> Result<(), String> {
     use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
@@ -1019,18 +1492,31 @@ pub async fn register_global_shortcut(
         .unregister_all()
         .map_err(|e| e.to_string())?;
 
-    if shortcut.is_empty() {
-        return Ok(());
+    // Atalho de gravação
+    if !shortcut.is_empty() {
+        let app_clone = app.clone();
+        app.global_shortcut()
+            .on_shortcut(shortcut.as_str(), move |_app, _s, event| {
+                if event.state() == ShortcutState::Pressed {
+                    let _ = app_clone.emit("toggle-recording", ());
+                }
+            })
+            .map_err(|e| format!("Erro ao registrar atalho '{}': {}", shortcut, e))?;
     }
 
-    let app_clone = app.clone();
-    app.global_shortcut()
-        .on_shortcut(shortcut.as_str(), move |_app, _s, event| {
-            if event.state() == ShortcutState::Pressed {
-                let _ = app_clone.emit("toggle-recording", ());
-            }
-        })
-        .map_err(|e| e.to_string())?;
+    // Atalho de mute mic
+    if let Some(ref mute) = mute_shortcut {
+        if !mute.is_empty() {
+            let app_clone = app.clone();
+            app.global_shortcut()
+                .on_shortcut(mute.as_str(), move |_app, _s, event| {
+                    if event.state() == ShortcutState::Pressed {
+                        let _ = app_clone.emit("toggle-mic-mute", ());
+                    }
+                })
+                .map_err(|e| format!("Erro ao registrar atalho mute '{}': {}", mute, e))?;
+        }
+    }
 
     Ok(())
 }

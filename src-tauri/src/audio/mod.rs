@@ -17,6 +17,15 @@ use hound::{SampleFormat, WavSpec, WavWriter};
 
 // ─── Tipos públicos ───────────────────────────────────────────────────────────
 
+/// Identifica a origem de um chunk de áudio.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AudioSource {
+    /// Áudio do sistema (WASAPI loopback — o que sai pelas caixas de som)
+    System,
+    /// Áudio do microfone (captura direta)
+    Microphone,
+}
+
 /// Dispositivo de áudio de entrada (microfone) disponível no sistema.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct AudioDevice {
@@ -32,6 +41,8 @@ pub struct AudioChunk {
     pub sample_rate: u32,
     pub channels: u16,
     pub duration_secs: f32,
+    /// Fonte do áudio (sistema ou microfone)
+    pub source: AudioSource,
 }
 
 impl AudioChunk {
@@ -256,20 +267,80 @@ pub fn list_capture_devices() -> Result<Vec<AudioDevice>> {
     }])
 }
 
-/// Inicia a captura de áudio via WASAPI loopback com suporte opcional ao microfone.
+/// Configuração específica do microfone passada ao `start_capture`.
+#[derive(Debug, Clone)]
+pub struct MicConfig {
+    /// Capturar microfone?
+    pub enabled: bool,
+    /// ID do dispositivo de microfone (vazio = padrão do sistema)
+    pub device_id: String,
+    /// Duração do chunk do mic (pode ser diferente do sistema)
+    pub chunk_duration_secs: f32,
+    /// Threshold de silêncio do mic (tipicamente mais baixo que sistema)
+    pub silence_threshold: f32,
+    /// Normalização automática de volume (AGC)
+    pub auto_gain: bool,
+    /// Fator de ganho máximo quando AGC está ativo (ex: 4.0 = amplifica até 4x)
+    pub gain_max: f32,
+}
+
+/// Aplica ganho automático (AGC) a um buffer de amostras.
+///
+/// Calcula o pico absoluto das amostras e aplica um ganho para levar o pico
+/// até `target_peak` (default 0.9), limitado por `gain_max`.
+/// Inclui smoothing para evitar variações abruptas de volume.
+fn apply_auto_gain(samples: &mut [f32], gain_max: f32) {
+    if samples.is_empty() || gain_max <= 1.0 {
+        return;
+    }
+
+    // Encontra o pico absoluto
+    let peak = samples.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+    if peak < 1e-6 {
+        return; // Silêncio total, não amplifica
+    }
+
+    // Calcula ganho necessário para levar o pico a 0.9 (margem para não clipar)
+    let target_peak = 0.9f32;
+    let gain = (target_peak / peak).min(gain_max).max(1.0);
+
+    if gain > 1.01 {
+        // Aplica ganho com clamp para evitar clipping
+        for s in samples.iter_mut() {
+            *s = (*s * gain).clamp(-1.0, 1.0);
+        }
+        log::trace!("AGC mic: peak={:.4}, gain={:.2}x", peak, gain);
+    }
+}
+
+/// Configuração do loopback do sistema passada ao `start_capture`.
+#[derive(Debug, Clone)]
+pub struct SystemConfig {
+    /// Duração do chunk do sistema (em segundos)
+    pub chunk_duration_secs: f32,
+    /// Threshold de silêncio (RMS abaixo deste valor → chunk descartado)
+    pub silence_threshold: f32,
+    /// Normalização automática de volume (AGC) para o loopback
+    pub auto_gain: bool,
+    /// Fator de ganho máximo quando AGC está ativo (ex: 3.0)
+    pub gain_max: f32,
+}
+
+/// Inicia a captura de áudio via WASAPI loopback com pipeline independente para microfone.
 ///
 /// # Parâmetros
-/// - `silence_threshold`: chunks com RMS abaixo deste valor são descartados (Feature 1)
-/// - `capture_mic`: se true, mistura o microfone com o áudio do sistema (Feature 5)
-/// - `mic_device_id`: ID do dispositivo de microfone a usar; vazio = padrão do sistema
+/// - `system_config`: configuração do loopback (threshold, chunk size, AGC)
+/// - `mic_config`: configuração do microfone (threshold, chunk size, AGC, etc.)
+///
+/// Cada fonte (sistema e microfone) acumula seu próprio buffer, faz silence detection
+/// independente e envia AudioChunks com o campo `source` identificando a origem.
+/// Ambas as fontes enviam para o mesmo canal mpsc (multi-producer).
 #[cfg(target_os = "windows")]
 pub fn start_capture(
     state: Arc<AudioCaptureState>,
     chunk_tx: mpsc::Sender<AudioChunk>,
-    chunk_duration_secs: f32,
-    silence_threshold: f32,
-    capture_mic: bool,
-    mic_device_id: String,
+    system_config: SystemConfig,
+    mic_config: MicConfig,
 ) -> Result<()> {
     use windows::Win32::{
         Media::Audio::{
@@ -284,14 +355,17 @@ pub fn start_capture(
 
     let (init_tx, init_rx) = mpsc::channel::<Result<()>>();
 
-    // Feature 5: buffer compartilhado entre thread do mic e thread de loopback
-    let mic_buffer: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
-
-    // ── Thread do microfone (Feature 5) ───────────────────────────────────────
-    if capture_mic {
-        let mic_buf = Arc::clone(&mic_buffer);
+    // ── Thread do microfone (Feature 5) — pipeline independente ──────────────
+    // O mic tem seu próprio buffer, chunk_target, silence detection e flush.
+    // Envia chunks com source=Microphone para o mesmo canal do loopback.
+    if mic_config.enabled {
+        let mic_tx = chunk_tx.clone();
         let state_mic = Arc::clone(&state);
-        let mic_dev_id = mic_device_id.clone();
+        let mic_dev_id = mic_config.device_id.clone();
+        let mic_chunk_secs = mic_config.chunk_duration_secs;
+        let mic_silence = mic_config.silence_threshold;
+        let mic_agc = mic_config.auto_gain;
+        let mic_gain_max = mic_config.gain_max;
 
         thread::spawn(move || unsafe {
             // COM em MTA nesta thread
@@ -395,7 +469,15 @@ pub fn start_capture(
                 return;
             }
 
-            log::info!("Microfone iniciado — {}Hz, {}ch", mic_sr, mic_ch);
+            log::info!("Microfone iniciado — {}Hz, {}ch, {}bps", mic_sr, mic_ch, mic_bps);
+
+            // ── Loop de captura do microfone (pipeline independente) ──────────
+            let mic_chunk_target =
+                (mic_sr as f32 * mic_ch as f32 * mic_chunk_secs) as usize;
+            let mut mic_pcm_buffer: Vec<f32> = Vec::with_capacity(mic_chunk_target * 2);
+
+            log::info!("Mic config: chunk={:.1}s, silence={:.4}, agc={}, gain_max={:.1}",
+                mic_chunk_secs, mic_silence, mic_agc, mic_gain_max);
 
             while state_mic.is_capturing() {
                 let pkt = match capture_client.GetNextPacketSize() {
@@ -428,26 +510,85 @@ pub fn start_capture(
                         if let Ok(mut lvl) = state_mic.mic_level.lock() {
                             *lvl = (*lvl * 0.7 + rms * 0.3).min(1.0);
                         }
-                        if let Ok(mut buf) = mic_buf.lock() {
-                            buf.extend_from_slice(&samples);
-                            // Limita o buffer a 5 segundos para evitar dessincronia
-                            let max = mic_sr as usize * mic_ch as usize * 5;
-                            if buf.len() > max {
-                                let excess = buf.len() - max;
-                                buf.drain(..excess);
-                            }
-                        }
+                        // Acumula no buffer próprio do mic (sem mutex compartilhado)
+                        mic_pcm_buffer.extend_from_slice(&samples);
                     } else if num_frames > 0 {
-                        // Frames silenciosos: empurra zeros
-                        if let Ok(mut buf) = mic_buf.lock() {
-                            buf.extend(
-                                std::iter::repeat(0.0f32)
-                                    .take(num_frames as usize * mic_ch as usize),
-                            );
-                        }
+                        // Frames silenciosos: empurra zeros para manter timing
+                        mic_pcm_buffer.extend(
+                            std::iter::repeat(0.0f32)
+                                .take(num_frames as usize * mic_ch as usize),
+                        );
                     }
 
                     let _ = capture_client.ReleaseBuffer(num_frames);
+                }
+
+                // Envia chunk quando acumulou amostras suficientes
+                if mic_pcm_buffer.len() >= mic_chunk_target {
+                    // Se mic está mutado, descarta o buffer acumulado
+                    if state_mic.is_mic_muted() {
+                        mic_pcm_buffer.drain(..mic_chunk_target);
+                        continue;
+                    }
+
+                    let mut chunk_data: Vec<f32> = mic_pcm_buffer.drain(..mic_chunk_target).collect();
+
+                    // AGC: normaliza volume do microfone antes do silence check
+                    if mic_agc {
+                        apply_auto_gain(&mut chunk_data, mic_gain_max);
+                    }
+
+                    // Silence detection independente para o mic (threshold próprio)
+                    let rms = compute_rms(&chunk_data);
+                    if rms >= mic_silence {
+                        let chunk = AudioChunk {
+                            samples: chunk_data,
+                            sample_rate: mic_sr,
+                            channels: mic_ch,
+                            duration_secs: mic_chunk_secs,
+                            source: AudioSource::Microphone,
+                        };
+                        if mic_tx.send(chunk).is_err() {
+                            log::warn!("Mic: canal fechado, encerrando captura");
+                            break;
+                        }
+                    } else {
+                        log::debug!(
+                            "Mic: chunk silencioso (RMS={:.4} < {:.4}), descartado",
+                            rms,
+                            mic_silence
+                        );
+                    }
+                }
+            }
+
+            // ── Flush final do microfone ─────────────────────────────────────
+            if !mic_pcm_buffer.is_empty() {
+                let remaining_samples = mic_pcm_buffer.len();
+                let actual_duration =
+                    remaining_samples as f32 / (mic_sr as f32 * mic_ch as f32);
+
+                if actual_duration >= 0.5 {
+                    let mut chunk_data = mic_pcm_buffer;
+                    if mic_agc {
+                        apply_auto_gain(&mut chunk_data, mic_gain_max);
+                    }
+                    let rms = compute_rms(&chunk_data);
+                    if rms >= mic_silence {
+                        log::info!(
+                            "Mic flush final: enviando {:.2}s de áudio restante ({} amostras)",
+                            actual_duration,
+                            remaining_samples
+                        );
+                        let chunk = AudioChunk {
+                            samples: chunk_data,
+                            sample_rate: mic_sr,
+                            channels: mic_ch,
+                            duration_secs: actual_duration,
+                            source: AudioSource::Microphone,
+                        };
+                        let _ = mic_tx.send(chunk);
+                    }
                 }
             }
 
@@ -457,6 +598,11 @@ pub fn start_capture(
     }
 
     // ── Thread principal: loopback do sistema ────────────────────────────────
+    let sys_chunk_secs = system_config.chunk_duration_secs;
+    let sys_silence = system_config.silence_threshold;
+    let sys_agc = system_config.auto_gain;
+    let sys_gain_max = system_config.gain_max;
+
     thread::spawn(move || {
         let result: Result<()> = (|| unsafe {
             if let Err(e) = CoInitializeEx(None, COINIT_MULTITHREADED) {
@@ -526,9 +672,12 @@ pub fn start_capture(
             );
             let _ = init_tx.send(Ok(()));
 
+            log::info!("System config: chunk={:.1}s, silence={:.4}, agc={}, gain_max={:.1}",
+                sys_chunk_secs, sys_silence, sys_agc, sys_gain_max);
+
             // ── Loop de captura ───────────────────────────────────────────────
             let chunk_target =
-                (sample_rate as f32 * channels as f32 * chunk_duration_secs) as usize;
+                (sample_rate as f32 * channels as f32 * sys_chunk_secs) as usize;
             let mut pcm_buffer: Vec<f32> = Vec::with_capacity(chunk_target * 2);
 
             while state.is_capturing() {
@@ -586,34 +735,20 @@ pub fn start_capture(
                 if pcm_buffer.len() >= chunk_target {
                     let mut chunk_data: Vec<f32> = pcm_buffer.drain(..chunk_target).collect();
 
-                    // Feature 5: mistura com microfone (se não estiver mutado)
-                    // Reduz gain para evitar saturação quando ambos têm áudio
-                    if capture_mic && !state.is_mic_muted() {
-                        if let Ok(mut mic_buf) = mic_buffer.lock() {
-                            let mic_len = mic_buf.len().min(chunk_target);
-                            if mic_len > 0 {
-                                let mic_chunk: Vec<f32> = mic_buf.drain(..mic_len).collect();
-                                for (s, &m) in chunk_data.iter_mut().zip(mic_chunk.iter()) {
-                                    // Reduz gain para 50% antes de somar para evitar distorção
-                                    *s = (*s * 0.5 + m * 0.5).clamp(-1.0, 1.0);
-                                }
-                            }
-                        }
-                    } else if capture_mic && state.is_mic_muted() {
-                        // Descarta buffer do mic acumulado para não dessincronizar
-                        if let Ok(mut mic_buf) = mic_buffer.lock() {
-                            mic_buf.clear();
-                        }
+                    // AGC: normaliza volume do loopback antes do silence check
+                    if sys_agc {
+                        apply_auto_gain(&mut chunk_data, sys_gain_max);
                     }
 
                     // Feature 1: descarta chunks silenciosos
                     let rms = compute_rms(&chunk_data);
-                    if rms >= silence_threshold {
+                    if rms >= sys_silence {
                         let chunk = AudioChunk {
                             samples: chunk_data,
                             sample_rate,
                             channels,
-                            duration_secs: chunk_duration_secs,
+                            duration_secs: sys_chunk_secs,
+                            source: AudioSource::System,
                         };
                         if chunk_tx.send(chunk).is_err() {
                             log::warn!("Canal fechado, encerrando captura");
@@ -623,7 +758,7 @@ pub fn start_capture(
                         log::debug!(
                             "Chunk silencioso (RMS={:.4} < {:.4}), descartado",
                             rms,
-                            silence_threshold
+                            sys_silence
                         );
                     }
                 }
@@ -641,23 +776,12 @@ pub fn start_capture(
                 // Só envia se tiver ao menos 0.5s de áudio (evita micro-chunks inúteis)
                 if actual_duration >= 0.5 {
                     let mut chunk_data = pcm_buffer;
-
-                    // Feature 5: mistura com microfone restante (se não mutado)
-                    // Reduz gain para evitar saturação
-                    if capture_mic && !state.is_mic_muted() {
-                        if let Ok(mut mic_buf) = mic_buffer.lock() {
-                            let mic_len = mic_buf.len().min(chunk_data.len());
-                            if mic_len > 0 {
-                                let mic_chunk: Vec<f32> = mic_buf.drain(..mic_len).collect();
-                                for (s, &m) in chunk_data.iter_mut().zip(mic_chunk.iter()) {
-                                    *s = (*s * 0.5 + m * 0.5).clamp(-1.0, 1.0);
-                                }
-                            }
-                        }
+                    if sys_agc {
+                        apply_auto_gain(&mut chunk_data, sys_gain_max);
                     }
 
                     let rms = compute_rms(&chunk_data);
-                    if rms >= silence_threshold {
+                    if rms >= sys_silence {
                         log::info!(
                             "Flush final: enviando {:.2}s de áudio restante ({} amostras)",
                             actual_duration,
@@ -668,6 +792,7 @@ pub fn start_capture(
                             sample_rate,
                             channels,
                             duration_secs: actual_duration,
+                            source: AudioSource::System,
                         };
                         let _ = chunk_tx.send(chunk);
                     } else {
@@ -704,14 +829,13 @@ pub fn start_capture(
 pub fn start_capture(
     state: Arc<AudioCaptureState>,
     chunk_tx: mpsc::Sender<AudioChunk>,
-    chunk_duration_secs: f32,
-    _silence_threshold: f32,
-    _capture_mic: bool,
-    _mic_device_id: String,
+    system_config: SystemConfig,
+    _mic_config: MicConfig,
 ) -> Result<()> {
     log::warn!("WASAPI não disponível — usando áudio simulado");
     let sample_rate: u32 = 44100;
     let channels: u16 = 2;
+    let chunk_duration_secs = system_config.chunk_duration_secs;
     let n = (sample_rate as f32 * channels as f32 * chunk_duration_secs) as usize;
 
     thread::spawn(move || {
@@ -722,6 +846,7 @@ pub fn start_capture(
                 sample_rate,
                 channels,
                 duration_secs: chunk_duration_secs,
+                source: AudioSource::System,
             };
             if chunk_tx.send(chunk).is_err() {
                 break;

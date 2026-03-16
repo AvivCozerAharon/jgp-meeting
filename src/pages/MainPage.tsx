@@ -62,6 +62,18 @@ export const MainPage: React.FC<MainPageProps> = ({ onMeetingSaved, onRecordingC
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isCapturing]);
 
+  // Escuta atalho global (toggle-mic-mute)
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    listen<void>('toggle-mic-mute', () => {
+      if (isCapturing) {
+        captureActions.toggleMicMute();
+      }
+    }).then(fn => { unlisten = fn; }).catch(console.error);
+    return () => { unlisten?.(); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isCapturing, captureActions]);
+
   const handleStart = useCallback(async () => {
     transcriptionActions.unmuteUpdates(); // Volta a escutar atualizações
     transcriptionActions.clearTranscript();

@@ -39,6 +39,9 @@ env_logger = "0.11"
 # Encoding de áudio WAV
 hound = "3.5"
 
+# Base64 para Google Cloud Speech-to-Text
+base64 = "0.22"
+
 # Utilitários de sistema
 sysinfo = "0.30"   # Feature 12: Detecção de apps de reunião por processo
 open    = "5"      # Feature 4:  Abrir pasta no explorador de arquivos

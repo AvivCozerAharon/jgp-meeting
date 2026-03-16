@@ -73,6 +73,12 @@ export interface AppSettings {
   transcription_language: string;
   summary_model: string;
   chunk_duration_secs: number;
+  /** Provider de transcrição: "openai", "groq", "google_cloud", "local" */
+  transcription_provider: string;
+  /** API key do Groq */
+  groq_api_key: string;
+  /** API key do Google Cloud STT */
+  google_cloud_api_key: string;
   /** Feature 1: threshold de silêncio */
   silence_threshold: number;
   /** Feature 5: captura microfone */
@@ -85,12 +91,28 @@ export interface AppSettings {
   default_meeting_type: MeetingType;
   /** Feature 13: atalho global (ex: "ctrl+shift+r") */
   global_hotkey: string;
+  /** Atalho global para mutar/desmutar mic (ex: "ctrl+shift+m") */
+  mute_mic_hotkey: string;
   /** Feature 15: gerar resumo automaticamente ao parar */
   auto_summary: boolean;
   /** Download de modelo Whisper: diretório dos modelos */
   local_models_dir: string;
   /** Microfone selecionado (ID WASAPI). Vazio = padrão do sistema */
   selected_microphone: string;
+  /** AGC: normalização automática de volume do mic */
+  mic_auto_gain: boolean;
+  /** Fator de ganho máximo do mic quando AGC ativo (ex: 4.0) */
+  mic_gain_max: number;
+  /** Threshold de silêncio separado para o microfone */
+  mic_silence_threshold: number;
+  /** Duração do chunk de áudio do microfone (segundos) */
+  mic_chunk_duration_secs: number;
+  /** AGC: normalização automática de volume do áudio do sistema (loopback) */
+  system_auto_gain: boolean;
+  /** Fator de ganho máximo do sistema quando AGC ativo (ex: 3.0) */
+  system_gain_max: number;
+  /** Prompt de contexto para o Whisper (melhora transcrição) */
+  whisper_prompt: string;
   /** Tema da interface: "dark", "light" ou "system" */
   theme: 'dark' | 'light' | 'system';
   // ─── Integração JGRC ──────────────────────────────────────────────────────
@@ -98,6 +120,8 @@ export interface AppSettings {
   jgrc_token: string;
   jgrc_event_type_id: string;
   jgrc_responsible_id: string;
+  /** Cookie de sessão do JGRC capturado via WebView */
+  jgrc_session_cookie: string;
 }
 
 /** Dispositivo de áudio de entrada disponível no sistema */
