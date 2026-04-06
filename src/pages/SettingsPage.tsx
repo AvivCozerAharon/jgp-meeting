@@ -2,16 +2,17 @@
 // Página de configurações do aplicativo com abas.
 
 import React, { useState } from "react";
-import { Settings, Keyboard, Link } from "lucide-react";
+import { Settings, Keyboard, Link, Cpu } from "lucide-react";
 import clsx from "clsx";
 import { SettingsPanel } from "@/components/SettingsModal";
 
-export type SettingsTab = "config" | "shortcuts" | "jgrc";
+export type SettingsTab = "config" | "modelos" | "shortcuts" | "jgrc";
 
 const TABS: { id: SettingsTab; label: string; icon: React.ElementType }[] = [
-  { id: "config", label: "Configurações Básicas", icon: Settings },
-  { id: "shortcuts", label: "Atalhos", icon: Keyboard },
-  { id: "jgrc", label: "Integração JGRC", icon: Link },
+  { id: "config",    label: "Geral",           icon: Settings },
+  { id: "modelos",   label: "Modelos & APIs",   icon: Cpu },
+  { id: "shortcuts", label: "Atalhos",          icon: Keyboard },
+  { id: "jgrc",      label: "Integração JGRC",  icon: Link },
 ];
 
 export const SettingsPage: React.FC = () => {

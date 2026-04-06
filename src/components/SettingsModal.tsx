@@ -65,7 +65,7 @@ const CHUNK_DURATIONS = [
   { value: 30, label: "30 segundos (mais econômico)" },
 ];
 
-type SettingsTab = "config" | "shortcuts" | "jgrc";
+type SettingsTab = "config" | "modelos" | "shortcuts" | "jgrc";
 
 interface SettingsPanelProps {
   className?: string;
