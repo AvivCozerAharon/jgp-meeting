@@ -76,7 +76,7 @@ export const MainPage: React.FC<MainPageProps> = ({ onMeetingSaved, onRecordingC
   }, [isCapturing, captureActions]);
 
   const handleStart = useCallback(async () => {
-    transcriptionActions.unmuteUpdates(); // Volta a escutar atualizações
+    transcriptionActions.unmuteUpdates();
     transcriptionActions.clearTranscript();
     await captureActions.start(meetingType);
     invoke("open_compliance_window").catch(console.error);
@@ -84,14 +84,22 @@ export const MainPage: React.FC<MainPageProps> = ({ onMeetingSaved, onRecordingC
 
   const handleStop = useCallback(async () => {
     invoke("close_compliance_window").catch(console.error);
-    const meetingId = await captureActions.stop();
-    if (meetingId) onMeetingSaved?.(meetingId);
-    // Limpa a tela para a próxima reunião.
-    // A transcrição já foi salva no backend — o draining continua em background
-    // e o resultado final aparece no Histórico (via evento meeting-updated).
-    transcriptionActions.muteUpdates(); // Ignora updates do draining
-    transcriptionActions.clearTranscript();
-  }, [captureActions, transcriptionActions, onMeetingSaved]);
+    // Apenas chama stop — o cleanup (muteUpdates, clearTranscript, onMeetingSaved)
+    // é feito pelo listener de "recording-stopped" abaixo, o que cobre tanto
+    // o stop pelo botão principal quanto pelo compliance overlay.
+    await captureActions.stop();
+  }, [captureActions]);
+
+  // Cleanup único para qualquer origem de stop (botão, compliance, atalho)
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    listen<string>("recording-stopped", (e) => {
+      if (e.payload) onMeetingSaved?.(e.payload);
+      transcriptionActions.muteUpdates();
+      transcriptionActions.clearTranscript();
+    }).then(fn => { unlisten = fn; }).catch(console.error);
+    return () => { unlisten?.(); };
+  }, [onMeetingSaved, transcriptionActions]);
 
   return (
     <div className="flex flex-col h-full bg-surface-50 dark:bg-[#0c0f17]">
