@@ -69,7 +69,8 @@ async function suggestFieldsWithAI(
   meeting: Meeting,
   eventTypes: JgrcSelectOption[],
   apiKey: string,
-  model: string
+  model: string,
+  baseUrl?: string
 ): Promise<AiSuggestion> {
   const eventTypesStr = eventTypes
     .map((et) => `${et.id}: ${et.name}`)
@@ -96,7 +97,8 @@ ${summaryText}
 Responda APENAS em JSON, sem markdown:
 {"event_type_id": "ID_NUMERICO", "subject": "assunto curto", "actions": "ações resumidas"}`;
 
-  const response = await fetch("https://api.openai.com/v1/chat/completions", {
+  const url = baseUrl || "https://api.openai.com/v1/chat/completions";
+  const response = await fetch(url, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -202,7 +204,8 @@ export const JgrcExportModal: React.FC<JgrcExportModalProps> = ({
       meeting,
       exportData.event_types,
       apiKey,
-      settings.summary_model ?? "gpt-4o-mini"
+      settings.summary_model ?? "gpt-4o-mini",
+      baseUrl
     )
       .then((suggestion) => {
         if (suggestion.event_type_id) {
@@ -220,8 +223,7 @@ export const JgrcExportModal: React.FC<JgrcExportModalProps> = ({
         setAiDone(true);
       })
       .finally(() => setAiLoading(false));
-    void baseUrl; // used for future invoke calls
-  }, [exportData, settings.summary_provider, settings.openrouter_api_key, settings.openai_api_key]);
+  }, [exportData, settings.summary_provider, settings.openrouter_api_key, settings.openai_api_key, settings.summary_model, meeting]);
 
   // 3) Export handler
   const handleExport = async () => {
