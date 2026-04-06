@@ -580,7 +580,7 @@ pub async fn open_compliance_window(app: AppHandle) -> Result<(), String> {
 
     tauri::WebviewWindowBuilder::new(&app, "compliance", url)
         .title("JGP Meeting — Gravando")
-        .inner_size(310.0, 72.0)
+        .inner_size(300.0, 72.0)
         .resizable(false)
         .decorations(false)
         .transparent(true)
