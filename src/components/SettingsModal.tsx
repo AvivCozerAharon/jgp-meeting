@@ -51,6 +51,26 @@ const SUPPORTED_MODELS = [
   { value: "gpt-3.5-turbo", label: "GPT-3.5 Turbo (Mais rápido)" },
 ];
 
+const TRANSCRIPTION_PROVIDERS = [
+  { value: "openai", label: "OpenAI Whisper" },
+  { value: "groq",   label: "Groq (rápido)" },
+  { value: "local",  label: "Local (offline)" },
+];
+
+const SUMMARY_PROVIDERS = [
+  { value: "openai",     label: "OpenAI" },
+  { value: "openrouter", label: "OpenRouter" },
+];
+
+const OPENROUTER_MODEL_SUGGESTIONS = [
+  "openai/gpt-4o-mini",
+  "openai/gpt-4o",
+  "anthropic/claude-haiku-4-5",
+  "anthropic/claude-sonnet-4-5",
+  "meta-llama/llama-3.1-8b-instruct:free",
+  "google/gemini-flash-1.5",
+];
+
 const SUPPORTED_LANGUAGES = [
   { value: "pt", label: "Português (pt)" },
   { value: "en", label: "English (en)" },
@@ -87,7 +107,8 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ className, activeT
     chunk_duration_secs: 10,
     transcription_provider: "openai",
     groq_api_key: "",
-    google_cloud_api_key: "",
+    openrouter_api_key: "",
+    summary_provider: "openai",
     silence_threshold: 0.005,
     capture_microphone: true,
     use_local_whisper: false,
@@ -723,6 +744,321 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ className, activeT
 
       {/* Download de modelo Whisper */}
       <WhisperModelDownloader onModelDownloaded={(path) => updateSetting("local_whisper_model", path)} />
+
+      </>)}
+
+      {activeTab === "modelos" && (<>
+
+      {/* ── Bloco 1: Transcrição ── */}
+      <SettingSection
+        icon={<Cpu className="w-4 h-4 text-surface-500" />}
+        title="Transcrição"
+        description="Serviço usado para transcrever o áudio das reuniões."
+      >
+        {/* Selector visual de provider */}
+        <div className="flex gap-2">
+          {TRANSCRIPTION_PROVIDERS.map(({ value, label }) => (
+            <button
+              key={value}
+              onClick={() => updateSetting("transcription_provider", value)}
+              className={clsx(
+                "flex-1 px-3 py-2.5 rounded-xl text-sm font-medium border transition-all duration-150",
+                (settings.transcription_provider ?? "openai") === value
+                  ? "bg-primary-500 border-primary-500 text-white shadow-sm"
+                  : "bg-surface-50 dark:bg-surface-800/60 border-surface-200 dark:border-surface-700 text-surface-600 dark:text-surface-300 hover:border-primary-400 dark:hover:border-primary-400"
+              )}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {/* API Key por provider */}
+        <div className="mt-4 space-y-3">
+          {(settings.transcription_provider ?? "openai") === "openai" && (
+            <div>
+              <label className="text-xs font-medium text-surface-600 dark:text-surface-400 mb-1.5 flex items-center gap-1.5">
+                <Key className="w-3.5 h-3.5" />
+                Chave da API OpenAI
+              </label>
+              <div className="relative">
+                <input
+                  type={showKey ? "text" : "password"}
+                  value={settings.openai_api_key}
+                  onChange={(e) => updateSetting("openai_api_key", e.target.value)}
+                  placeholder="sk-..."
+                  className={clsx(
+                    "w-full px-3 pr-10 py-2.5 text-sm font-mono rounded-xl border",
+                    "border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-800/60 text-surface-800 dark:text-surface-200",
+                    "focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent",
+                    "placeholder:text-surface-300 dark:placeholder:text-surface-600 transition-all"
+                  )}
+                />
+                <button onClick={() => setShowKey((v) => !v)} className="absolute right-3 top-1/2 -translate-y-1/2 text-surface-400 hover:text-surface-600 dark:hover:text-surface-300 transition-colors">
+                  {showKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {(settings.transcription_provider ?? "openai") === "groq" && (
+            <div>
+              <label className="text-xs font-medium text-surface-600 dark:text-surface-400 mb-1.5 flex items-center gap-1.5">
+                <Key className="w-3.5 h-3.5" />
+                Chave da API Groq
+              </label>
+              <div className="relative">
+                <input
+                  type={showKey ? "text" : "password"}
+                  value={settings.groq_api_key ?? ""}
+                  onChange={(e) => updateSetting("groq_api_key", e.target.value)}
+                  placeholder="gsk_..."
+                  className={clsx(
+                    "w-full px-3 pr-10 py-2.5 text-sm font-mono rounded-xl border",
+                    "border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-800/60 text-surface-800 dark:text-surface-200",
+                    "focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent",
+                    "placeholder:text-surface-300 dark:placeholder:text-surface-600 transition-all"
+                  )}
+                />
+                <button onClick={() => setShowKey((v) => !v)} className="absolute right-3 top-1/2 -translate-y-1/2 text-surface-400 hover:text-surface-600 dark:hover:text-surface-300 transition-colors">
+                  {showKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
+              <p className="text-xs text-surface-400 dark:text-surface-500 mt-1">
+                Crie uma conta gratuita em console.groq.com.
+              </p>
+            </div>
+          )}
+
+          {(settings.transcription_provider ?? "openai") === "local" && (
+            <div className="space-y-3">
+              <div className="flex items-start gap-2 p-2 bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/20 rounded-lg text-xs text-amber-800 dark:text-amber-300">
+                <span className="mt-0.5">⚠️</span>
+                <span>Baixe o <strong>whisper-cli.exe</strong> em github.com/ggerganov/whisper.cpp/releases.</span>
+              </div>
+              <div>
+                <label className="text-xs font-medium text-surface-600 dark:text-surface-400 mb-1 block flex items-center gap-1.5">
+                  <FolderOpen className="w-3.5 h-3.5" />
+                  Executável whisper-cli.exe
+                </label>
+                <input
+                  type="text"
+                  value={settings.local_whisper_exe ?? ""}
+                  onChange={(e) => updateSetting("local_whisper_exe", e.target.value)}
+                  placeholder="C:\whisper\whisper-cli.exe"
+                  className={clsx(
+                    "w-full px-3 py-2 text-sm rounded-xl border font-mono",
+                    "border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-800/60 text-surface-800 dark:text-surface-200",
+                    "focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent",
+                    "placeholder:text-surface-300 dark:placeholder:text-surface-600"
+                  )}
+                />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-surface-600 dark:text-surface-400 mb-1 block flex items-center gap-1.5">
+                  <HardDrive className="w-3.5 h-3.5" />
+                  Caminho do modelo (.bin)
+                </label>
+                <input
+                  type="text"
+                  value={settings.local_whisper_model ?? "base"}
+                  onChange={(e) => updateSetting("local_whisper_model", e.target.value)}
+                  placeholder="base  ou  C:\...\ggml-base.bin"
+                  className={clsx(
+                    "w-full px-3 py-2 text-sm rounded-xl border font-mono",
+                    "border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-800/60 text-surface-800 dark:text-surface-200",
+                    "focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent",
+                    "placeholder:text-surface-300 dark:placeholder:text-surface-600"
+                  )}
+                />
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Idioma + Chunk duration */}
+        <div className="mt-4 grid grid-cols-2 gap-3">
+          <div>
+            <label className="text-xs font-medium text-surface-600 dark:text-surface-400 mb-1.5 flex items-center gap-1.5">
+              <Globe className="w-3.5 h-3.5" />
+              Idioma
+            </label>
+            <select
+              value={settings.transcription_language}
+              onChange={(e) => updateSetting("transcription_language", e.target.value)}
+              className={clsx(
+                "w-full px-3 py-2 text-sm rounded-xl border",
+                "border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-800/60 text-surface-800 dark:text-surface-200",
+                "focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent",
+                "transition-all appearance-none cursor-pointer"
+              )}
+            >
+              {SUPPORTED_LANGUAGES.map((lang) => (
+                <option key={lang.value} value={lang.value}>{lang.label}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="text-xs font-medium text-surface-600 dark:text-surface-400 mb-1.5 flex items-center gap-1.5">
+              <Clock className="w-3.5 h-3.5" />
+              Intervalo
+            </label>
+            <select
+              value={settings.chunk_duration_secs}
+              onChange={(e) => updateSetting("chunk_duration_secs", Number(e.target.value))}
+              className={clsx(
+                "w-full px-3 py-2 text-sm rounded-xl border",
+                "border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-800/60 text-surface-800 dark:text-surface-200",
+                "focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent",
+                "transition-all appearance-none cursor-pointer"
+              )}
+            >
+              {CHUNK_DURATIONS.map((d) => (
+                <option key={d.value} value={d.value}>{d.label}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+      </SettingSection>
+
+      {/* ── Bloco 2: Resumos com IA ── */}
+      <SettingSection
+        icon={<Sparkles className="w-4 h-4 text-surface-500" />}
+        title="Resumos com IA"
+        description="Provider e modelo usados para gerar resumos das reuniões."
+      >
+        {/* Selector visual de provider */}
+        <div className="flex gap-2">
+          {SUMMARY_PROVIDERS.map(({ value, label }) => (
+            <button
+              key={value}
+              onClick={() => updateSetting("summary_provider", value)}
+              className={clsx(
+                "flex-1 px-3 py-2.5 rounded-xl text-sm font-medium border transition-all duration-150",
+                (settings.summary_provider ?? "openai") === value
+                  ? "bg-primary-500 border-primary-500 text-white shadow-sm"
+                  : "bg-surface-50 dark:bg-surface-800/60 border-surface-200 dark:border-surface-700 text-surface-600 dark:text-surface-300 hover:border-primary-400 dark:hover:border-primary-400"
+              )}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        <div className="mt-4 space-y-3">
+          {(settings.summary_provider ?? "openai") === "openai" && (<>
+            {(settings.transcription_provider ?? "openai") === "openai" ? (
+              <p className="text-xs text-surface-400 dark:text-surface-500 flex items-center gap-1.5">
+                <Key className="w-3.5 h-3.5" />
+                Usando a mesma chave OpenAI configurada na Transcrição.
+              </p>
+            ) : (
+              <div>
+                <label className="text-xs font-medium text-surface-600 dark:text-surface-400 mb-1.5 flex items-center gap-1.5">
+                  <Key className="w-3.5 h-3.5" />
+                  Chave da API OpenAI (resumos)
+                </label>
+                <div className="relative">
+                  <input
+                    type={showKey ? "text" : "password"}
+                    value={settings.openai_api_key}
+                    onChange={(e) => updateSetting("openai_api_key", e.target.value)}
+                    placeholder="sk-..."
+                    className={clsx(
+                      "w-full px-3 pr-10 py-2.5 text-sm font-mono rounded-xl border",
+                      "border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-800/60 text-surface-800 dark:text-surface-200",
+                      "focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent",
+                      "placeholder:text-surface-300 dark:placeholder:text-surface-600 transition-all"
+                    )}
+                  />
+                  <button onClick={() => setShowKey((v) => !v)} className="absolute right-3 top-1/2 -translate-y-1/2 text-surface-400 hover:text-surface-600 dark:hover:text-surface-300 transition-colors">
+                    {showKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+              </div>
+            )}
+            <div>
+              <label className="text-xs font-medium text-surface-600 dark:text-surface-400 mb-1.5 block">
+                Modelo
+              </label>
+              <select
+                value={settings.summary_model}
+                onChange={(e) => updateSetting("summary_model", e.target.value)}
+                className={clsx(
+                  "w-full px-3 py-2.5 text-sm rounded-xl border",
+                  "border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-800/60 text-surface-800 dark:text-surface-200",
+                  "focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent",
+                  "transition-all appearance-none cursor-pointer"
+                )}
+              >
+                {SUPPORTED_MODELS.map((model) => (
+                  <option key={model.value} value={model.value}>{model.label}</option>
+                ))}
+              </select>
+            </div>
+          </>)}
+
+          {(settings.summary_provider ?? "openai") === "openrouter" && (<>
+            <div>
+              <label className="text-xs font-medium text-surface-600 dark:text-surface-400 mb-1.5 flex items-center gap-1.5">
+                <Key className="w-3.5 h-3.5" />
+                Chave da API OpenRouter
+              </label>
+              <div className="relative">
+                <input
+                  type={showKey ? "text" : "password"}
+                  value={settings.openrouter_api_key ?? ""}
+                  onChange={(e) => updateSetting("openrouter_api_key", e.target.value)}
+                  placeholder="sk-or-..."
+                  className={clsx(
+                    "w-full px-3 pr-10 py-2.5 text-sm font-mono rounded-xl border",
+                    "border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-800/60 text-surface-800 dark:text-surface-200",
+                    "focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent",
+                    "placeholder:text-surface-300 dark:placeholder:text-surface-600 transition-all"
+                  )}
+                />
+                <button onClick={() => setShowKey((v) => !v)} className="absolute right-3 top-1/2 -translate-y-1/2 text-surface-400 hover:text-surface-600 dark:hover:text-surface-300 transition-colors">
+                  {showKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
+              <p className="text-xs text-surface-400 dark:text-surface-500 mt-1">
+                Obtenha em openrouter.ai/keys — acesso a centenas de modelos.
+              </p>
+            </div>
+            <div>
+              <label className="text-xs font-medium text-surface-600 dark:text-surface-400 mb-1.5 block">
+                Modelo
+              </label>
+              <input
+                type="text"
+                list="openrouter-models"
+                value={settings.summary_model}
+                onChange={(e) => updateSetting("summary_model", e.target.value)}
+                placeholder="openai/gpt-4o-mini"
+                className={clsx(
+                  "w-full px-3 py-2.5 text-sm font-mono rounded-xl border",
+                  "border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-800/60 text-surface-800 dark:text-surface-200",
+                  "focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent",
+                  "placeholder:text-surface-300 dark:placeholder:text-surface-600 transition-all"
+                )}
+              />
+              <datalist id="openrouter-models">
+                {OPENROUTER_MODEL_SUGGESTIONS.map((m) => (
+                  <option key={m} value={m} />
+                ))}
+              </datalist>
+              <p className="text-xs text-surface-400 dark:text-surface-500 mt-1">
+                Digite qualquer model ID do OpenRouter ou escolha uma sugestão.
+              </p>
+            </div>
+          </>)}
+        </div>
+      </SettingSection>
+
+      {/* Download de modelo Whisper — só quando provider local */}
+      {(settings.transcription_provider ?? "openai") === "local" && (
+        <WhisperModelDownloader onModelDownloaded={(path) => updateSetting("local_whisper_model", path)} />
+      )}
 
       </>)}
 
