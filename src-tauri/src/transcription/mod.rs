@@ -3,11 +3,10 @@
 /// Suporta múltiplos providers:
 ///   - OpenAI Whisper API
 ///   - Groq Whisper (API compatível com OpenAI, modelo whisper-large-v3-turbo)
-///   - Google Cloud Speech-to-Text v1
 ///   - Whisper local via whisper.cpp subprocess (Feature 7)
 use anyhow::{Context, Result};
 use reqwest::multipart;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 // ─── Tipos internos ───────────────────────────────────────────────────────────
 
@@ -19,48 +18,6 @@ struct OpenAIError {
 #[derive(Debug, Deserialize)]
 struct OpenAIErrorDetail {
     message: String,
-}
-
-// ─── Google Cloud STT types ──────────────────────────────────────────────────
-
-#[derive(Debug, Serialize)]
-struct GoogleSpeechRequest {
-    config: GoogleRecognitionConfig,
-    audio: GoogleAudioData,
-}
-
-#[derive(Debug, Serialize)]
-struct GoogleRecognitionConfig {
-    encoding: String,
-    #[serde(rename = "sampleRateHertz")]
-    sample_rate_hertz: u32,
-    #[serde(rename = "languageCode")]
-    language_code: String,
-    model: String,
-    #[serde(rename = "enableAutomaticPunctuation")]
-    enable_automatic_punctuation: bool,
-}
-
-#[derive(Debug, Serialize)]
-struct GoogleAudioData {
-    content: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct GoogleSpeechResponse {
-    #[serde(default)]
-    results: Vec<GoogleSpeechResult>,
-}
-
-#[derive(Debug, Deserialize)]
-struct GoogleSpeechResult {
-    #[serde(default)]
-    alternatives: Vec<GoogleAlternative>,
-}
-
-#[derive(Debug, Deserialize)]
-struct GoogleAlternative {
-    transcript: String,
 }
 
 // ─── API Whisper (OpenAI / Groq — compatível) ──────────────────────────────
@@ -170,99 +127,6 @@ pub async fn transcribe_groq(
         prompt,
     )
     .await
-}
-
-// ─── Google Cloud Speech-to-Text v1 ─────────────────────────────────────────
-
-/// Transcreve áudio usando Google Cloud Speech-to-Text v1.
-///
-/// Requer conversão para mono 16kHz (usar `AudioChunk::to_wav_bytes_whisper()`).
-/// A API aceita até ~1 minuto de áudio síncrono.
-pub async fn transcribe_google_cloud(
-    wav_bytes: Vec<u8>,
-    api_key: &str,
-    language: Option<&str>,
-) -> Result<String> {
-    use base64::Engine;
-
-    if wav_bytes.len() < 1024 {
-        return Ok(String::new());
-    }
-
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(60))
-        .build()
-        .context("Falha ao criar cliente HTTP")?;
-
-    let wav_base64 = base64::engine::general_purpose::STANDARD.encode(&wav_bytes);
-
-    let lang_code = language
-        .filter(|l| !l.is_empty())
-        .map(|l| {
-            // Converte código curto (ex: "pt") para formato BCP-47 (ex: "pt-BR")
-            match l {
-                "pt" => "pt-BR",
-                "en" => "en-US",
-                "es" => "es-ES",
-                "fr" => "fr-FR",
-                "de" => "de-DE",
-                "it" => "it-IT",
-                "ja" => "ja-JP",
-                "zh" => "zh-CN",
-                other => other,
-            }
-        })
-        .unwrap_or("pt-BR")
-        .to_string();
-
-    let request_body = GoogleSpeechRequest {
-        config: GoogleRecognitionConfig {
-            encoding: "LINEAR16".to_string(),
-            sample_rate_hertz: 16000,
-            language_code: lang_code,
-            model: "default".to_string(),
-            enable_automatic_punctuation: true,
-        },
-        audio: GoogleAudioData {
-            content: wav_base64,
-        },
-    };
-
-    let url = format!(
-        "https://speech.googleapis.com/v1/speech:recognize?key={}",
-        api_key
-    );
-
-    let response = client
-        .post(&url)
-        .json(&request_body)
-        .send()
-        .await
-        .context("Falha ao chamar Google Cloud STT")?;
-
-    let status = response.status();
-
-    if !status.is_success() {
-        let body = response.text().await.unwrap_or_default();
-        return Err(anyhow::anyhow!("Google Cloud STT ({}): {}", status, body));
-    }
-
-    let result: GoogleSpeechResponse = response
-        .json()
-        .await
-        .context("Falha ao parsear resposta Google Cloud STT")?;
-
-    let text = result
-        .results
-        .into_iter()
-        .flat_map(|r| r.alternatives)
-        .map(|a| a.transcript)
-        .collect::<Vec<_>>()
-        .join(" ")
-        .trim()
-        .to_string();
-
-    Ok(text)
 }
 
 // ─── Feature 7: Whisper local via whisper.cpp ─────────────────────────────────
