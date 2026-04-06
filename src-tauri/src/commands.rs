@@ -97,9 +97,14 @@ pub async fn start_capture(
     let settings = storage::load_settings()
         .map_err(|e| format!("Erro ao carregar configurações: {e}"))?;
 
-    // Determina o provider de transcrição (compatibilidade: use_local_whisper legado)
+    // Determina o provider de transcrição.
+    // O campo transcription_provider tem precedência; use_local_whisper só entra
+    // quando o provider não é "openai" nem "groq" (compatibilidade com configs antigas).
     let provider = if settings.transcription_provider == "local"
-        || (settings.use_local_whisper && !settings.local_whisper_exe.is_empty())
+        || (settings.transcription_provider != "openai"
+            && settings.transcription_provider != "groq"
+            && settings.use_local_whisper
+            && !settings.local_whisper_exe.is_empty())
     {
         "local"
     } else {
