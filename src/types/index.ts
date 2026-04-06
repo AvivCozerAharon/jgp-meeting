@@ -77,8 +77,10 @@ export interface AppSettings {
   transcription_provider: string;
   /** API key do Groq */
   groq_api_key: string;
-  /** API key do Google Cloud STT */
-  google_cloud_api_key: string;
+  /** API key do OpenRouter (resumos com qualquer modelo) */
+  openrouter_api_key: string;
+  /** Provider de resumos: "openai" | "openrouter" */
+  summary_provider: string;
   /** Feature 1: threshold de silêncio */
   silence_threshold: number;
   /** Feature 5: captura microfone */
