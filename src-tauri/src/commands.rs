@@ -277,7 +277,7 @@ pub async fn start_capture(
                         transcript.push_str(prefix);
                     }
                     transcript.push(' ');
-                    transcript.push_str(&text);
+                    transcript.push_str(&crate::text_processing::normalize_numbers(&text));
                     let full = transcript.clone();
                     drop(transcript);
                     let _ = app.emit("transcription-update", full);

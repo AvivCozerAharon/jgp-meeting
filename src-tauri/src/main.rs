@@ -7,6 +7,7 @@ mod commands;
 mod detection;
 mod export;
 mod storage;
+mod text_processing;
 mod transcription;
 
 use commands::AppState;
