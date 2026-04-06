@@ -1147,21 +1147,6 @@ fn build_jgrc_content(meeting: &Meeting) -> String {
             summary.summary.replace('\n', "<br/>")
         ));
 
-        if !summary.key_points.is_empty() {
-            let points = summary.key_points.iter()
-                .map(|p| format!("<li>{p}</li>"))
-                .collect::<Vec<_>>()
-                .join("");
-            parts.push(format!("<p><strong>Pontos principais:</strong><ul>{points}</ul></p>"));
-        }
-
-        if !summary.tasks.is_empty() {
-            let items = summary.tasks.iter()
-                .map(|i| format!("<li>{i}</li>"))
-                .collect::<Vec<_>>()
-                .join("");
-            parts.push(format!("<p><strong>Ações:</strong><ul>{items}</ul></p>"));
-        }
     }
 
     if !meeting.transcript.is_empty() {
