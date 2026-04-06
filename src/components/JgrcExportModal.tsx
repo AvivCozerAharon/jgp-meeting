@@ -189,13 +189,19 @@ export const JgrcExportModal: React.FC<JgrcExportModalProps> = ({
 
   // 2) Once form data is loaded, run AI suggestion
   useEffect(() => {
-    if (!exportData || !settings.openai_api_key || aiDone) return;
+    const apiKey = settings.summary_provider === "openrouter"
+      ? settings.openrouter_api_key
+      : settings.openai_api_key;
+    const baseUrl = settings.summary_provider === "openrouter"
+      ? "https://openrouter.ai/api/v1/chat/completions"
+      : "https://api.openai.com/v1/chat/completions";
+    if (!exportData || !apiKey || aiDone) return;
 
     setAiLoading(true);
     suggestFieldsWithAI(
       meeting,
       exportData.event_types,
-      settings.openai_api_key,
+      apiKey,
       settings.summary_model ?? "gpt-4o-mini"
     )
       .then((suggestion) => {
@@ -214,7 +220,8 @@ export const JgrcExportModal: React.FC<JgrcExportModalProps> = ({
         setAiDone(true);
       })
       .finally(() => setAiLoading(false));
-  }, [exportData, settings.openai_api_key]);
+    void baseUrl; // used for future invoke calls
+  }, [exportData, settings.summary_provider, settings.openrouter_api_key, settings.openai_api_key]);
 
   // 3) Export handler
   const handleExport = async () => {

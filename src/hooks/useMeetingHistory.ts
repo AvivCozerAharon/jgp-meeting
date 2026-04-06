@@ -7,8 +7,21 @@ import { listen } from "@tauri-apps/api/event";
 import { listMeetings, deleteMeeting, getMeeting } from "@/services/storageService";
 import { generateAndSaveSummary } from "@/services/aiSummaryService";
 import { getSettings } from "@/services/storageService";
-import type { Meeting } from "@/types";
+import type { Meeting, AppSettings } from "@/types";
 import { MEETING_TYPE_LABELS } from "@/types";
+
+function getSummaryCredentials(settings: AppSettings): { apiKey: string; baseUrl: string } {
+  if (settings.summary_provider === "openrouter") {
+    return {
+      apiKey: settings.openrouter_api_key ?? "",
+      baseUrl: "https://openrouter.ai/api/v1/chat/completions",
+    };
+  }
+  return {
+    apiKey: settings.openai_api_key ?? "",
+    baseUrl: "https://api.openai.com/v1/chat/completions",
+  };
+}
 
 export interface MeetingHistoryState {
   /** Lista de reuniões já filtrada pelo searchQuery */
@@ -158,15 +171,15 @@ export function useMeetingHistory(): [MeetingHistoryState, MeetingHistoryActions
     setError(null);
     try {
       const settings = await getSettings();
-      if (!settings.openai_api_key) {
-        throw new Error("Chave da API OpenAI não configurada.");
+      const { apiKey, baseUrl } = getSummaryCredentials(settings);
+      if (!apiKey) {
+        throw new Error(
+          settings.summary_provider === "openrouter"
+            ? "Chave do OpenRouter não configurada."
+            : "Chave da API OpenAI não configurada."
+        );
       }
-
-      const summary = await generateAndSaveSummary(
-        meetingId,
-        settings.openai_api_key,
-        settings.summary_model
-      );
+      const summary = await generateAndSaveSummary(meetingId, apiKey, settings.summary_model, baseUrl);
 
       // Atualiza a reunião na lista e no detalhe
       setAllMeetings((prev) =>

@@ -6,8 +6,21 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { generateSummary } from "@/services/aiSummaryService";
 import { getSettings } from "@/services/storageService";
-import type { MeetingSummary, SummaryStatus } from "@/types";
+import type { MeetingSummary, SummaryStatus, AppSettings } from "@/types";
 import type { UnlistenFn } from "@tauri-apps/api/event";
+
+function getSummaryCredentials(settings: AppSettings): { apiKey: string; baseUrl: string } {
+  if (settings.summary_provider === "openrouter") {
+    return {
+      apiKey: settings.openrouter_api_key ?? "",
+      baseUrl: "https://openrouter.ai/api/v1/chat/completions",
+    };
+  }
+  return {
+    apiKey: settings.openai_api_key ?? "",
+    baseUrl: "https://api.openai.com/v1/chat/completions",
+  };
+}
 
 export interface TranscriptionState {
   /** Texto completo transcrito até o momento */
@@ -96,15 +109,15 @@ export function useTranscription(): [TranscriptionState, TranscriptionActions] {
     try {
       const settings = await getSettings();
 
-      if (!settings.openai_api_key) {
-        throw new Error("Chave da API OpenAI não configurada. Acesse as Configurações.");
+      const { apiKey, baseUrl } = getSummaryCredentials(settings);
+      if (!apiKey) {
+        throw new Error(
+          settings.summary_provider === "openrouter"
+            ? "Chave do OpenRouter não configurada."
+            : "Chave da API OpenAI não configurada."
+        );
       }
-
-      const result = await generateSummary(
-        transcript,
-        settings.openai_api_key,
-        settings.summary_model || "gpt-4o-mini"
-      );
+      const result = await generateSummary(transcript, apiKey, settings.summary_model || "gpt-4o-mini", baseUrl);
 
       setSummary(result);
       setSummaryStatus("done");
