@@ -41,9 +41,6 @@ export interface SpeakerSegment {
 
 export interface MeetingSummary {
   summary: string;
-  decisions: string[];
-  tasks: string[];
-  key_points: string[];
   /** Feature 9: rascunho de e-mail de follow-up */
   followup_email?: string | null;
 }
