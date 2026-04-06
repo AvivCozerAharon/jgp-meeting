@@ -14,6 +14,17 @@ use crate::export;
 use crate::storage::{self, AppSettings, Meeting, MeetingType};
 use crate::transcription;
 
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+/// Retorna (api_key, endpoint) para geração de resumos com base nas configurações.
+fn summary_credentials(settings: &storage::AppSettings) -> (String, &'static str) {
+    if settings.summary_provider == "openrouter" {
+        (settings.openrouter_api_key.clone(), ai::OPENROUTER_ENDPOINT)
+    } else {
+        (settings.openai_api_key.clone(), ai::OPENAI_ENDPOINT)
+    }
+}
+
 // ─── Estado Global ────────────────────────────────────────────────────────────
 
 pub struct AppState {
@@ -103,9 +114,6 @@ pub async fn start_capture(
         "groq" if settings.groq_api_key.is_empty() => {
             return Err("Chave da API Groq não configurada.".to_string());
         }
-        "google_cloud" if settings.google_cloud_api_key.is_empty() => {
-            return Err("Chave da API Google Cloud não configurada.".to_string());
-        }
         "local" if settings.local_whisper_exe.is_empty() => {
             return Err("Executável whisper-cli não configurado.".to_string());
         }
@@ -161,7 +169,6 @@ pub async fn start_capture(
     let provider_str     = provider.to_string();
     let api_key          = settings.openai_api_key.clone();
     let groq_key         = settings.groq_api_key.clone();
-    let gcloud_key       = settings.google_cloud_api_key.clone();
     let language         = settings.transcription_language.clone();
     let whisper_exe      = settings.local_whisper_exe.clone();
     let whisper_model    = settings.local_whisper_model.clone();
@@ -192,14 +199,13 @@ pub async fn start_capture(
             language: &str,
             api_key: &str,
             groq_key: &str,
-            gcloud_key: &str,
             whisper_prompt: &str,
             app: &AppHandle,
         ) -> bool {
             let _ = app.emit("transcription-processing", true);
 
-            // Google Cloud e local precisam de WAV mono 16kHz; OpenAI/Groq aceitam qualquer formato
-            let needs_whisper_format = provider == "local" || provider == "google_cloud";
+            // Local precisa de WAV mono 16kHz; OpenAI/Groq aceitam qualquer formato
+            let needs_whisper_format = provider == "local";
 
             let wav_bytes = if needs_whisper_format {
                 match chunk.to_wav_bytes_whisper() {
@@ -226,9 +232,6 @@ pub async fn start_capture(
             let result = match provider {
                 "groq" => {
                     transcription::transcribe_groq(wav_bytes, groq_key, Some(language), prompt_opt).await
-                }
-                "google_cloud" => {
-                    transcription::transcribe_google_cloud(wav_bytes, gcloud_key, Some(language)).await
                 }
                 "local" => {
                     transcription::transcribe_local(wav_bytes, whisper_exe, whisper_model, language).await
@@ -304,7 +307,7 @@ pub async fn start_capture(
                     process_chunk(
                         chunk, &provider_str,
                         &whisper_exe, &whisper_model, &language, &api_key,
-                        &groq_key, &gcloud_key,
+                        &groq_key,
                         &whisper_prompt, &app_clone,
                     ).await;
                 }
@@ -356,7 +359,7 @@ pub async fn start_capture(
                 process_chunk(
                     drain_chunk, &provider_str,
                     &whisper_exe, &whisper_model, &language, &api_key,
-                    &groq_key, &gcloud_key,
+                    &groq_key,
                     &whisper_prompt, &app_clone,
                 ).await;
 
@@ -464,38 +467,38 @@ pub async fn stop_capture(
 
     // Feature 15: auto-resumo em background
     let settings = storage::load_settings().unwrap_or_default();
-    if settings.auto_summary
-        && !meeting.transcript.trim().is_empty()
-        && !settings.openai_api_key.is_empty()
-    {
-        let transcript     = meeting.transcript.clone();
-        let api_key        = settings.openai_api_key.clone();
-        let model          = settings.summary_model.clone();
-        let meeting_type   = meeting.meeting_type.clone().unwrap_or_default();
-        let meeting_id     = id.clone();
-        let app_auto       = app.clone();
+    if settings.auto_summary && !meeting.transcript.trim().is_empty() {
+        let (api_key, endpoint_str) = summary_credentials(&settings);
+        if !api_key.is_empty() {
+            let transcript     = meeting.transcript.clone();
+            let model          = settings.summary_model.clone();
+            let meeting_type   = meeting.meeting_type.clone().unwrap_or_default();
+            let meeting_id     = id.clone();
+            let app_auto       = app.clone();
+            let endpoint_owned = endpoint_str.to_string();
 
-        tokio::spawn(async move {
-            log::info!("Auto-resumo iniciado para reunião {meeting_id}");
-            let _ = app_auto.emit("auto-summary-loading", &meeting_id);
+            tokio::spawn(async move {
+                log::info!("Auto-resumo iniciado para reunião {meeting_id}");
+                let _ = app_auto.emit("auto-summary-loading", &meeting_id);
 
-            match ai::generate_summary(&transcript, &api_key, &model, &meeting_type).await {
-                Ok(summary) => {
-                    if let Ok(mut m) = storage::load_meeting(&meeting_id) {
-                        m.summary = Some(summary.clone());
-                        let _ = storage::save_meeting(&m);
+                match ai::generate_summary(&transcript, &api_key, &model, &meeting_type, &endpoint_owned).await {
+                    Ok(summary) => {
+                        if let Ok(mut m) = storage::load_meeting(&meeting_id) {
+                            m.summary = Some(summary.clone());
+                            let _ = storage::save_meeting(&m);
+                        }
+                        let _ = app_auto.emit(
+                            "auto-summary-done",
+                            serde_json::json!({ "meeting_id": meeting_id, "summary": summary }),
+                        );
                     }
-                    let _ = app_auto.emit(
-                        "auto-summary-done",
-                        serde_json::json!({ "meeting_id": meeting_id, "summary": summary }),
-                    );
+                    Err(e) => {
+                        log::error!("Auto-resumo falhou: {e}");
+                        let _ = app_auto.emit("auto-summary-error", e.to_string());
+                    }
                 }
-                Err(e) => {
-                    log::error!("Auto-resumo falhou: {e}");
-                    let _ = app_auto.emit("auto-summary-error", e.to_string());
-                }
-            }
-        });
+            });
+        }
     }
 
     log::info!("Reunião {id} salva");
@@ -544,13 +547,15 @@ pub async fn generate_summary(
     api_key: String,
     model: Option<String>,
     meeting_type: Option<MeetingType>,
+    base_url: Option<String>,
 ) -> Result<MeetingSummary, String> {
     if transcript.trim().is_empty() {
         return Err("Transcrição vazia".to_string());
     }
     let model = model.unwrap_or_else(|| ai::default_model().to_string());
     let mt = meeting_type.unwrap_or_default();
-    ai::generate_summary(&transcript, &api_key, &model, &mt)
+    let endpoint = base_url.as_deref().unwrap_or(ai::OPENAI_ENDPOINT);
+    ai::generate_summary(&transcript, &api_key, &model, &mt, endpoint)
         .await
         .map_err(|e| format!("Erro ao gerar resumo: {e}"))
 }
@@ -561,14 +566,16 @@ pub async fn generate_and_save_summary(
     meeting_id: String,
     api_key: String,
     model: Option<String>,
+    base_url: Option<String>,
 ) -> Result<MeetingSummary, String> {
     let mut meeting =
         storage::load_meeting(&meeting_id).map_err(|e| format!("Reunião não encontrada: {e}"))?;
 
     let model = model.unwrap_or_else(|| ai::default_model().to_string());
     let mt = meeting.meeting_type.clone().unwrap_or_default();
+    let endpoint = base_url.as_deref().unwrap_or(ai::OPENAI_ENDPOINT);
 
-    let summary = ai::generate_summary(&meeting.transcript, &api_key, &model, &mt)
+    let summary = ai::generate_summary(&meeting.transcript, &api_key, &model, &mt, endpoint)
         .await
         .map_err(|e| format!("Erro ao gerar resumo: {e}"))?;
 
@@ -585,6 +592,7 @@ pub async fn generate_followup_email(
     meeting_id: String,
     api_key: String,
     model: Option<String>,
+    base_url: Option<String>,
 ) -> Result<String, String> {
     let mut meeting =
         storage::load_meeting(&meeting_id).map_err(|e| format!("Reunião não encontrada: {e}"))?;
@@ -595,8 +603,9 @@ pub async fn generate_followup_email(
         .ok_or("Gere o resumo da reunião antes do e-mail de follow-up")?;
 
     let model = model.unwrap_or_else(|| ai::default_model().to_string());
+    let endpoint = base_url.as_deref().unwrap_or(ai::OPENAI_ENDPOINT);
 
-    let email = ai::generate_followup_email(&meeting.transcript, &summary, &api_key, &model)
+    let email = ai::generate_followup_email(&meeting.transcript, &summary, &api_key, &model, endpoint)
         .await
         .map_err(|e| format!("Erro ao gerar e-mail: {e}"))?;
 
@@ -617,6 +626,7 @@ pub async fn diarize_transcript(
     meeting_id: String,
     api_key: String,
     model: Option<String>,
+    base_url: Option<String>,
 ) -> Result<Vec<SpeakerSegment>, String> {
     let mut meeting =
         storage::load_meeting(&meeting_id).map_err(|e| format!("Reunião não encontrada: {e}"))?;
@@ -626,8 +636,9 @@ pub async fn diarize_transcript(
     }
 
     let model = model.unwrap_or_else(|| ai::default_model().to_string());
+    let endpoint = base_url.as_deref().unwrap_or(ai::OPENAI_ENDPOINT);
 
-    let segments = ai::diarize_transcript(&meeting.transcript, &api_key, &model)
+    let segments = ai::diarize_transcript(&meeting.transcript, &api_key, &model, endpoint)
         .await
         .map_err(|e| format!("Erro na diarização: {e}"))?;
 
@@ -1530,6 +1541,7 @@ pub async fn ask_about_transcript(
     question: String,
     api_key: String,
     model: Option<String>,
+    base_url: Option<String>,
 ) -> Result<String, String> {
     let meeting =
         storage::load_meeting(&meeting_id).map_err(|e| format!("Reunião não encontrada: {e}"))?;
@@ -1539,8 +1551,9 @@ pub async fn ask_about_transcript(
     }
 
     let model = model.unwrap_or_else(|| ai::default_model().to_string());
+    let endpoint = base_url.as_deref().unwrap_or(ai::OPENAI_ENDPOINT);
 
-    ai::ask_about_transcript(&question, &meeting.transcript, &api_key, &model)
+    ai::ask_about_transcript(&question, &meeting.transcript, &api_key, &model, endpoint)
         .await
         .map_err(|e| format!("Erro ao responder pergunta: {e}"))
 }
