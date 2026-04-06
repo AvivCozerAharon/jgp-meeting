@@ -6,11 +6,12 @@ interface Props {
   meetingId: string;
   apiKey: string;
   model?: string;
+  baseUrl?: string;
   existingEmail?: string | null;
   onGenerated: (email: string) => void;
 }
 
-export function FollowupEmail({ meetingId, apiKey, model, existingEmail, onGenerated }: Props) {
+export function FollowupEmail({ meetingId, apiKey, model, baseUrl, existingEmail, onGenerated }: Props) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
@@ -23,6 +24,7 @@ export function FollowupEmail({ meetingId, apiKey, model, existingEmail, onGener
         meetingId,
         apiKey,
         model: model ?? null,
+        baseUrl: baseUrl ?? null,
       });
       onGenerated(email);
     } catch (e) {
