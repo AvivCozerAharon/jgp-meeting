@@ -108,9 +108,17 @@ pub struct AppSettings {
     #[serde(default)]
     pub groq_api_key: String,
 
-    /// API key do Google Cloud (para Speech-to-Text v1)
+    /// API key do Google Cloud (legado — mantido apenas para não quebrar settings.json existente)
     #[serde(default)]
     pub google_cloud_api_key: String,
+
+    /// API key do OpenRouter (para geração de resumos com qualquer modelo)
+    #[serde(default)]
+    pub openrouter_api_key: String,
+
+    /// Provider usado para geração de resumos: "openai" | "openrouter"
+    #[serde(default = "default_summary_provider")]
+    pub summary_provider: String,
 
     /// Feature 1: amostras com RMS abaixo deste valor são descartadas (não vão ao Whisper)
     pub silence_threshold: f32,
@@ -228,6 +236,10 @@ fn default_transcription_provider() -> String {
     "openai".to_string()
 }
 
+fn default_summary_provider() -> String {
+    "openai".to_string()
+}
+
 fn default_capture_mic() -> bool {
     true
 }
@@ -272,6 +284,8 @@ impl AppSettings {
             transcription_provider: "openai".to_string(),
             groq_api_key: String::new(),
             google_cloud_api_key: String::new(),
+            openrouter_api_key: String::new(),
+            summary_provider: "openai".to_string(),
             silence_threshold: 0.002,
             capture_microphone: true,
             use_local_whisper: false,
