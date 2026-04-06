@@ -458,6 +458,10 @@ pub async fn stop_capture(
         .map(|s| s.elapsed().as_secs())
         .unwrap_or(0);
 
+    if meeting.transcript.trim().is_empty() {
+        return Err("Nenhuma fala foi capturada.".to_string());
+    }
+
     let id = meeting.id.clone();
     storage::save_meeting(&meeting).map_err(|e| format!("Erro ao salvar reunião: {e}"))?;
     *state.capture_start.lock().unwrap() = None;
