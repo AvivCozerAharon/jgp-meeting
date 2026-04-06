@@ -518,6 +518,8 @@ pub async fn stop_capture(
     }
 
     log::info!("Reunião {id} salva");
+    // Notifica todas as janelas (inclusive compliance) que a gravação terminou
+    let _ = app.emit("recording-stopped", &id);
     Ok(id)
 }
 

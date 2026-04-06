@@ -75,7 +75,17 @@ export function useAudioCapture(): [AudioCaptureState, AudioCaptureActions] {
         if (isMounted) setError(`Erro de transcrição: ${err}`);
       });
 
-      unlisteners.current = [unlistenLevel, unlistenMic, unlistenProcessing, unlistenError];
+      // Sincroniza estado quando stop vem de outra janela (ex: compliance overlay)
+      const unlistenStopped = await listen<string>("recording-stopped", (e) => {
+        if (isMounted) {
+          setIsCapturing(false);
+          setAudioLevel(0);
+          setIsProcessing(false);
+          setLastMeetingId(e.payload);
+        }
+      });
+
+      unlisteners.current = [unlistenLevel, unlistenMic, unlistenProcessing, unlistenError, unlistenStopped];
     };
 
     setupListeners().catch(console.error);

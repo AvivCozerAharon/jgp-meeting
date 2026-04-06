@@ -119,8 +119,14 @@ export const ComplianceOverlay = () => {
   }, []);
 
   useEffect(() => {
-    const p = listen<boolean>("capture-paused", (e) => setIsPaused(e.payload));
-    return () => { p.then((fn) => fn()); };
+    const unsubs = [
+      listen<boolean>("capture-paused", (e) => setIsPaused(e.payload)),
+      // Fecha esta janela quando a gravação termina (via qualquer origem)
+      listen<string>("recording-stopped", () => {
+        invoke("close_compliance_window").catch(() => {});
+      }),
+    ];
+    return () => { unsubs.forEach((p) => p.then((fn) => fn())); };
   }, []);
 
   const handleMute = useCallback(async () => {
@@ -132,8 +138,14 @@ export const ComplianceOverlay = () => {
   }, []);
 
   const handleStop = useCallback(async () => {
-    try { await invoke("stop_capture"); } catch {}
-    invoke("close_compliance_window").catch(() => {});
+    try {
+      await invoke("stop_capture");
+      // Janela fecha via evento "recording-stopped" emitido pelo backend
+    } catch (e) {
+      console.error("stop_capture falhou:", e);
+      // Fecha mesmo assim para não deixar janela órfã
+      invoke("close_compliance_window").catch(() => {});
+    }
   }, []);
 
   const accentColor = isPaused ? "#f59e0b" : "#ef4444";
