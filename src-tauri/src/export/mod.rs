@@ -152,27 +152,6 @@ fn format_md(meeting: &Meeting) -> String {
 fn format_summary_txt(out: &mut String, s: &MeetingSummary) {
     out.push_str(&format!("Resumo:\n{}\n\n", s.summary));
 
-    if !s.decisions.is_empty() {
-        out.push_str("Decisões:\n");
-        for d in &s.decisions {
-            out.push_str(&format!("  • {}\n", d));
-        }
-        out.push('\n');
-    }
-    if !s.tasks.is_empty() {
-        out.push_str("Tarefas:\n");
-        for t in &s.tasks {
-            out.push_str(&format!("  • {}\n", t));
-        }
-        out.push('\n');
-    }
-    if !s.key_points.is_empty() {
-        out.push_str("Pontos Importantes:\n");
-        for k in &s.key_points {
-            out.push_str(&format!("  • {}\n", k));
-        }
-        out.push('\n');
-    }
     if let Some(email) = &s.followup_email {
         out.push_str("E-mail de Follow-up:\n");
         out.push_str(email);
@@ -184,27 +163,6 @@ fn format_summary_md(out: &mut String, s: &MeetingSummary) {
     out.push_str("## 🤖 Resumo Gerado por IA\n\n");
     out.push_str(&format!("{}\n\n", s.summary));
 
-    if !s.decisions.is_empty() {
-        out.push_str("### ✅ Decisões\n\n");
-        for d in &s.decisions {
-            out.push_str(&format!("- {}\n", d));
-        }
-        out.push('\n');
-    }
-    if !s.tasks.is_empty() {
-        out.push_str("### 📌 Tarefas\n\n");
-        for t in &s.tasks {
-            out.push_str(&format!("- {}\n", t));
-        }
-        out.push('\n');
-    }
-    if !s.key_points.is_empty() {
-        out.push_str("### 💡 Pontos Importantes\n\n");
-        for k in &s.key_points {
-            out.push_str(&format!("- {}\n", k));
-        }
-        out.push('\n');
-    }
     if let Some(email) = &s.followup_email {
         out.push_str("### 📧 E-mail de Follow-up\n\n");
         out.push_str("```\n");

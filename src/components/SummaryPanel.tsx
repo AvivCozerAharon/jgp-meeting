@@ -5,9 +5,6 @@ import React from "react";
 import clsx from "clsx";
 import {
   Sparkles,
-  CheckCircle2,
-  ListTodo,
-  Star,
   AlertCircle,
 } from "lucide-react";
 import type { MeetingSummary, SummaryStatus } from "@/types";
@@ -106,64 +103,16 @@ export const SummaryPanel: React.FC<SummaryPanelProps> = ({
         )}
 
         {hasSummary && (
-          <div className="space-y-3 animate-slide-up">
+          <div className="animate-slide-up">
             {summary.summary && (
               <SummaryCard
                 icon={<Sparkles className="w-4 h-4 text-primary-500" />}
                 title="Resumo"
                 accentColor="primary"
               >
-                <p className="text-sm text-surface-600 dark:text-surface-300 leading-relaxed">
+                <p className="text-sm text-surface-600 dark:text-surface-300 leading-relaxed whitespace-pre-line">
                   {summary.summary}
                 </p>
-              </SummaryCard>
-            )}
-
-            {summary.decisions.length > 0 && (
-              <SummaryCard
-                icon={<CheckCircle2 className="w-4 h-4 text-emerald-500" />}
-                title="Decisões"
-                accentColor="emerald"
-              >
-                <ul className="space-y-1.5">
-                  {summary.decisions.map((decision, i) => (
-                    <ListItem key={i} color="emerald">
-                      {decision}
-                    </ListItem>
-                  ))}
-                </ul>
-              </SummaryCard>
-            )}
-
-            {summary.tasks.length > 0 && (
-              <SummaryCard
-                icon={<ListTodo className="w-4 h-4 text-blue-500" />}
-                title="Tarefas"
-                accentColor="blue"
-              >
-                <ul className="space-y-1.5">
-                  {summary.tasks.map((task, i) => (
-                    <ListItem key={i} color="blue">
-                      {task}
-                    </ListItem>
-                  ))}
-                </ul>
-              </SummaryCard>
-            )}
-
-            {summary.key_points.length > 0 && (
-              <SummaryCard
-                icon={<Star className="w-4 h-4 text-amber-500" />}
-                title="Pontos Importantes"
-                accentColor="amber"
-              >
-                <ul className="space-y-1.5">
-                  {summary.key_points.map((point, i) => (
-                    <ListItem key={i} color="amber">
-                      {point}
-                    </ListItem>
-                  ))}
-                </ul>
               </SummaryCard>
             )}
           </div>
@@ -236,28 +185,4 @@ const SummaryCard: React.FC<SummaryCardProps> = ({
     </div>
     {children}
   </div>
-);
-
-const listItemDotColors: Record<AccentColor, string> = {
-  primary: "bg-primary-400",
-  emerald: "bg-emerald-400",
-  blue: "bg-blue-400",
-  amber: "bg-amber-400",
-};
-
-interface ListItemProps {
-  color: AccentColor;
-  children: React.ReactNode;
-}
-
-const ListItem: React.FC<ListItemProps> = ({ color, children }) => (
-  <li className="flex items-start gap-2">
-    <span
-      className={clsx(
-        "mt-1.5 flex-shrink-0 w-1.5 h-1.5 rounded-full",
-        listItemDotColors[color]
-      )}
-    />
-    <span className="text-sm text-surface-600 dark:text-surface-300 leading-relaxed">{children}</span>
-  </li>
 );

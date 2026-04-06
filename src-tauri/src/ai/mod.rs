@@ -12,13 +12,10 @@ pub const OPENROUTER_ENDPOINT: &str = "https://openrouter.ai/api/v1/chat/complet
 
 // ─── Tipos públicos ───────────────────────────────────────────────────────────
 
-/// Resumo estruturado gerado pela IA a partir da transcrição.
+/// Resumo gerado pela IA a partir da transcrição — texto corrido em prosa.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct MeetingSummary {
     pub summary: String,
-    pub decisions: Vec<String>,
-    pub tasks: Vec<String>,
-    pub key_points: Vec<String>,
     /// Feature 9: rascunho de e-mail de follow-up (gerado separadamente)
     pub followup_email: Option<String>,
 }
@@ -27,9 +24,6 @@ impl Default for MeetingSummary {
     fn default() -> Self {
         Self {
             summary: String::new(),
-            decisions: Vec::new(),
-            tasks: Vec::new(),
-            key_points: Vec::new(),
             followup_email: None,
         }
     }
@@ -52,27 +46,28 @@ pub struct SpeakerSegment {
 fn summary_system_prompt(meeting_type: &MeetingType) -> String {
     let template_focus = match meeting_type {
         MeetingType::General => {
-            "Foque em decisões estratégicas, ações definidas e pontos principais discutidos."
+            "Aborde: contexto e objetivo da reunião, decisões estratégicas tomadas \
+             (com responsáveis quando mencionados), próximas ações acordadas e pontos relevantes."
         }
         MeetingType::Standup => {
-            "Identifique claramente: (1) O que cada pessoa fez, (2) O que cada pessoa fará, \
-             (3) Bloqueios ou impedimentos relatados."
+            "Aborde: o que cada pessoa concluiu desde o último standup, o que cada pessoa \
+             fará até o próximo, e bloqueios ou impedimentos relatados. Mencione nomes."
         }
         MeetingType::OneOnOne => {
-            "Foque em: feedbacks dados/recebidos, metas e desenvolvimento pessoal, \
+            "Aborde: feedbacks dados e recebidos, metas e desenvolvimento pessoal discutidos, \
              próximos passos acordados entre os participantes."
         }
         MeetingType::Retrospective => {
-            "Organize em: o que funcionou bem (keep), o que deve melhorar (improve), \
-             o que deve parar (stop) e ações de melhoria concretas."
+            "Aborde: o que funcionou bem e deve continuar (keep), o que deve melhorar (improve), \
+             o que deve parar (stop) e as ações de melhoria concretas definidas."
         }
         MeetingType::Commercial => {
-            "Identifique: dores e necessidades do cliente, proposta de valor apresentada, \
-             objeções levantadas, próxima ação de vendas e timeline esperado."
+            "Aborde: perfil e dores do cliente, proposta de valor apresentada, objeções levantadas \
+             e como foram tratadas, próxima ação de vendas acordada e timeline esperado."
         }
         MeetingType::Interview => {
-            "Avalie: competências técnicas demonstradas, soft skills observadas, \
-             pontos fortes do candidato, pontos de atenção e recomendação final."
+            "Aborde: competências técnicas demonstradas, soft skills observadas, pontos fortes \
+             do candidato, pontos de atenção e recomendação final sobre o perfil."
         }
     };
 
@@ -80,21 +75,23 @@ fn summary_system_prompt(meeting_type: &MeetingType) -> String {
         r#"Você é um assistente especializado em análise de reuniões de trabalho.
 Tipo desta reunião: {} — {}
 
-Analise a transcrição e gere um resumo estruturado em JSON com EXATAMENTE este formato:
+Analise a transcrição e gere um resumo em JSON com EXATAMENTE este formato:
 {{
-  "summary": "resumo geral objetivo em 2-4 frases",
-  "decisions": ["decisão concreta 1", "decisão concreta 2"],
-  "tasks": ["[Responsável] descrição da tarefa", "..."],
-  "key_points": ["ponto importante 1", "..."],
+  "summary": "texto completo em prosa aqui",
   "followup_email": null
 }}
 
+O campo "summary" deve ser um texto corrido em português do Brasil, profissional e detalhado.
+Escreva em parágrafos fluidos, sem bullet points, sem marcadores, sem cabeçalhos.
+O texto deve cobrir: contexto e objetivo da reunião, principais temas discutidos, decisões tomadas
+(com responsáveis quando mencionados), próximos passos acordados e pontos de atenção relevantes.
+Seja suficientemente detalhado para que o texto possa ser publicado diretamente em um sistema
+de gestão sem necessidade de edição.
+
 Regras:
 - Responda SEMPRE em português do Brasil
-- Seja objetivo e conciso
-- Capture apenas decisões concretas (não suposições)
-- Se não houver decisões/tarefas, retorne array vazio []
-- Se a transcrição for muito curta, indique no summary"#,
+- Texto corrido sem listas ou marcadores
+- Se a transcrição for muito curta ou sem conteúdo relevante, indique isso no summary"#,
         meeting_type.icon(),
         template_focus
     )
@@ -220,7 +217,7 @@ pub async fn generate_summary(
         "Analise a transcrição abaixo e gere o resumo JSON:\n\n---\n{transcript}\n---"
     );
 
-    let content = call_gpt(&system, &user, api_key, model, 2000, endpoint).await?;
+    let content = call_gpt(&system, &user, api_key, model, 3000, endpoint).await?;
 
     let mut summary: MeetingSummary =
         serde_json::from_str(&content)
@@ -257,22 +254,9 @@ O e-mail deve:
 - Listar as tarefas com responsáveis
 - Terminar com próximos passos ou call-to-action"#;
 
-    let decisions_text = if summary.decisions.is_empty() {
-        "Nenhuma decisão formal registrada.".to_string()
-    } else {
-        summary.decisions.iter().map(|d| format!("• {d}")).collect::<Vec<_>>().join("\n")
-    };
-
-    let tasks_text = if summary.tasks.is_empty() {
-        "Nenhuma tarefa atribuída.".to_string()
-    } else {
-        summary.tasks.iter().map(|t| format!("• {t}")).collect::<Vec<_>>().join("\n")
-    };
-
     let user = format!(
-        "Resumo da reunião: {}\n\nDecisões:\n{}\n\nTarefas:\n{}\n\n\
-         Gere o e-mail de follow-up.",
-        summary.summary, decisions_text, tasks_text
+        "Resumo da reunião:\n{}\n\nGere o e-mail de follow-up.",
+        summary.summary
     );
 
     let content = call_gpt(system, &user, api_key, model, 1000, endpoint).await?;

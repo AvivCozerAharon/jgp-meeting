@@ -77,7 +77,7 @@ async function suggestFieldsWithAI(
     .join("\n");
 
   const summaryText = meeting.summary
-    ? `Resumo: ${meeting.summary.summary}\nPontos: ${meeting.summary.key_points.join("; ")}\nAções: ${meeting.summary.tasks.join("; ")}`
+    ? `Resumo: ${meeting.summary.summary}`
     : `Transcrição: ${meeting.transcript.slice(0, 2000)}`;
 
   const prompt = `Você é um assistente que classifica reuniões de uma empresa financeira (JGP - gestora de investimentos).
@@ -152,9 +152,7 @@ export const JgrcExportModal: React.FC<JgrcExportModalProps> = ({
   const [eventTypeId, setEventTypeId] = useState("");
   const [responsibleId, setResponsibleId] = useState("");
   const [subject, setSubject] = useState(meeting.title);
-  const [actions, setActions] = useState(
-    meeting.summary?.tasks?.join("; ") ?? ""
-  );
+  const [actions, setActions] = useState("");
   const [managerId, setManagerId] = useState("");
   const [attendees, setAttendees] = useState("");
   const [internalAttendeeIds, setInternalAttendeeIds] = useState<string[]>([]);

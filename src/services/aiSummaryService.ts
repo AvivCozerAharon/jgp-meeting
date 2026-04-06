@@ -48,10 +48,5 @@ export async function askAboutTranscript(
 
 export function hasMeaningfulSummary(summary: MeetingSummary | null): boolean {
   if (!summary) return false;
-  return (
-    summary.summary.length > 10 ||
-    summary.decisions.length > 0 ||
-    summary.tasks.length > 0 ||
-    summary.key_points.length > 0
-  );
+  return summary.summary.length > 10;
 }

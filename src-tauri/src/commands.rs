@@ -458,6 +458,10 @@ pub async fn stop_capture(
         .map(|s| s.elapsed().as_secs())
         .unwrap_or(0);
 
+    if meeting.transcript.trim().is_empty() {
+        return Err("Nenhuma fala foi capturada.".to_string());
+    }
+
     let id = meeting.id.clone();
     storage::save_meeting(&meeting).map_err(|e| format!("Erro ao salvar reunião: {e}"))?;
     *state.capture_start.lock().unwrap() = None;
@@ -1143,21 +1147,6 @@ fn build_jgrc_content(meeting: &Meeting) -> String {
             summary.summary.replace('\n', "<br/>")
         ));
 
-        if !summary.key_points.is_empty() {
-            let points = summary.key_points.iter()
-                .map(|p| format!("<li>{p}</li>"))
-                .collect::<Vec<_>>()
-                .join("");
-            parts.push(format!("<p><strong>Pontos principais:</strong><ul>{points}</ul></p>"));
-        }
-
-        if !summary.tasks.is_empty() {
-            let items = summary.tasks.iter()
-                .map(|i| format!("<li>{i}</li>"))
-                .collect::<Vec<_>>()
-                .join("");
-            parts.push(format!("<p><strong>Ações:</strong><ul>{items}</ul></p>"));
-        }
     }
 
     if !meeting.transcript.is_empty() {
