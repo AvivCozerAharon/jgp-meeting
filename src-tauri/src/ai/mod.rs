@@ -1,11 +1,14 @@
 /// ai/mod.rs
 /// Serviços de IA: geração de resumo, e-mail de follow-up e diarização de falantes.
-/// Todos os modelos GPT são acessados via API OpenAI (chat completions).
+/// Todos os modelos GPT são acessados via API OpenAI ou OpenRouter (chat completions).
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::storage::MeetingType;
+
+pub const OPENAI_ENDPOINT: &str = "https://api.openai.com/v1/chat/completions";
+pub const OPENROUTER_ENDPOINT: &str = "https://openrouter.ai/api/v1/chat/completions";
 
 // ─── Tipos públicos ───────────────────────────────────────────────────────────
 
@@ -120,8 +123,9 @@ async fn call_gpt(
     api_key: &str,
     model: &str,
     max_tokens: u32,
+    endpoint: &str,
 ) -> Result<String> {
-    call_gpt_inner(system, user, api_key, model, max_tokens, true).await
+    call_gpt_inner(system, user, api_key, model, max_tokens, true, endpoint).await
 }
 
 /// Variante sem response_format json_object — para respostas de texto livre.
@@ -131,8 +135,9 @@ async fn call_gpt_text(
     api_key: &str,
     model: &str,
     max_tokens: u32,
+    endpoint: &str,
 ) -> Result<String> {
-    call_gpt_inner(system, user, api_key, model, max_tokens, false).await
+    call_gpt_inner(system, user, api_key, model, max_tokens, false, endpoint).await
 }
 
 async fn call_gpt_inner(
@@ -142,6 +147,7 @@ async fn call_gpt_inner(
     model: &str,
     max_tokens: u32,
     json_mode: bool,
+    endpoint: &str,
 ) -> Result<String> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(90))
@@ -161,14 +167,22 @@ async fn call_gpt_inner(
         body["response_format"] = json!({ "type": "json_object" });
     }
 
-    let resp = client
-        .post("https://api.openai.com/v1/chat/completions")
+    let mut req = client
+        .post(endpoint)
         .header("Authorization", format!("Bearer {api_key}"))
-        .header("Content-Type", "application/json")
+        .header("Content-Type", "application/json");
+
+    if endpoint.contains("openrouter.ai") {
+        req = req
+            .header("HTTP-Referer", "https://jgp-meeting.app")
+            .header("X-Title", "JGP Meeting");
+    }
+
+    let resp = req
         .json(&body)
         .send()
         .await
-        .context("Falha ao chamar API GPT")?;
+        .context("Falha ao chamar API")?;
 
     let status = resp.status();
     if !status.is_success() {
@@ -192,6 +206,7 @@ pub async fn generate_summary(
     api_key: &str,
     model: &str,
     meeting_type: &MeetingType,
+    endpoint: &str,
 ) -> Result<MeetingSummary> {
     if transcript.trim().len() < 50 {
         return Ok(MeetingSummary {
@@ -205,7 +220,7 @@ pub async fn generate_summary(
         "Analise a transcrição abaixo e gere o resumo JSON:\n\n---\n{transcript}\n---"
     );
 
-    let content = call_gpt(&system, &user, api_key, model, 2000).await?;
+    let content = call_gpt(&system, &user, api_key, model, 2000, endpoint).await?;
 
     let mut summary: MeetingSummary =
         serde_json::from_str(&content)
@@ -225,6 +240,7 @@ pub async fn generate_followup_email(
     summary: &MeetingSummary,
     api_key: &str,
     model: &str,
+    endpoint: &str,
 ) -> Result<String> {
     let system = r#"Você é um assistente especializado em comunicação profissional.
 Gere um e-mail de follow-up em português do Brasil, profissional e conciso.
@@ -259,7 +275,7 @@ O e-mail deve:
         summary.summary, decisions_text, tasks_text
     );
 
-    let content = call_gpt(system, &user, api_key, model, 1000).await?;
+    let content = call_gpt(system, &user, api_key, model, 1000, endpoint).await?;
 
     #[derive(Deserialize)]
     struct EmailResp {
@@ -282,6 +298,7 @@ pub async fn diarize_transcript(
     transcript: &str,
     api_key: &str,
     model: &str,
+    endpoint: &str,
 ) -> Result<Vec<SpeakerSegment>> {
     if transcript.trim().len() < 30 {
         return Ok(Vec::new());
@@ -310,7 +327,7 @@ Regras:
         "Identifique os falantes nesta transcrição:\n\n---\n{transcript}\n---"
     );
 
-    let content = call_gpt(system, &user, api_key, model, 3000).await?;
+    let content = call_gpt(system, &user, api_key, model, 3000, endpoint).await?;
 
     #[derive(Deserialize)]
     struct DiarizationResp {
@@ -332,6 +349,7 @@ pub async fn ask_about_transcript(
     transcript: &str,
     api_key: &str,
     model: &str,
+    endpoint: &str,
 ) -> Result<String> {
     if transcript.trim().is_empty() {
         return Err(anyhow::anyhow!("Transcrição vazia — não é possível responder perguntas"));
@@ -346,7 +364,7 @@ pub async fn ask_about_transcript(
         "Transcrição da reunião:\n---\n{transcript}\n---\n\nPergunta: {question}"
     );
 
-    call_gpt_text(system, &user, api_key, model, 800).await
+    call_gpt_text(system, &user, api_key, model, 800, endpoint).await
 }
 
 // ─── Utilitários ──────────────────────────────────────────────────────────────
