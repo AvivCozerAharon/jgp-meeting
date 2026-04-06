@@ -33,22 +33,27 @@ export const ComplianceOverlay = () => {
     return () => clearInterval(id);
   }, [isPaused]);
 
-  // Sincroniza estado com o backend via polling leve
+  // Na montagem: sincroniza estado inicial do backend (duration, mute, paused)
   useEffect(() => {
+    invoke<{ mic_muted: boolean; is_paused: boolean; duration_secs: number }>(
+      "get_capture_status"
+    )
+      .then((s) => {
+        setMicMuted(s.mic_muted);
+        setIsPaused(s.is_paused);
+        setDuration(s.duration_secs);
+      })
+      .catch(() => {});
+
+    // Poll apenas para mute — duration é gerenciada localmente pelo timer
     const poll = setInterval(async () => {
       try {
-        const status = await invoke<{
-          mic_muted: boolean;
-          is_paused: boolean;
-          duration_secs: number;
-        }>("get_capture_status");
+        const status = await invoke<{ mic_muted: boolean; is_paused: boolean }>(
+          "get_capture_status"
+        );
         setMicMuted(status.mic_muted);
-        setIsPaused(status.is_paused);
-        setDuration(status.duration_secs);
-      } catch {
-        // janela pode abrir antes da gravação estar totalmente iniciada
-      }
-    }, 1000);
+      } catch {}
+    }, 2000);
     return () => clearInterval(poll);
   }, []);
 
@@ -78,6 +83,8 @@ export const ComplianceOverlay = () => {
     try {
       await invoke("stop_capture");
     } catch (e) { console.error(e); }
+    // Fecha esta janela independente de erro (stop pode falhar se já parou)
+    invoke("close_compliance_window").catch(() => {});
   }, []);
 
   const bgColor = isPaused
