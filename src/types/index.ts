@@ -135,6 +135,8 @@ export interface CaptureStatus {
   is_capturing: boolean;
   audio_level: number;
   mic_level: number;
+  mic_muted: boolean;
+  is_paused: boolean;
   transcript_length: number;
   duration_secs: number;
 }

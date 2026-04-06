@@ -4,10 +4,13 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
+import { ComplianceOverlay } from "./components/ComplianceOverlay";
 import "./index.css";
+
+const isComplianceWindow = window.location.hash === "#compliance";
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
-    <App />
+    {isComplianceWindow ? <ComplianceOverlay /> : <App />}
   </React.StrictMode>
 );

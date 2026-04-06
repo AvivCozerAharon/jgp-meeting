@@ -65,6 +65,7 @@ pub struct CaptureStatus {
     pub audio_level: f32,
     pub mic_level: f32,
     pub mic_muted: bool,
+    pub is_paused: bool,
     pub transcript_length: usize,
     pub duration_secs: u64,
 }
@@ -139,15 +140,17 @@ pub async fn start_capture(
         .capture_state
         .is_capturing
         .store(true, std::sync::atomic::Ordering::SeqCst);
-    // Reseta mic muted para nova sessão
+    // Reseta mic muted e paused para nova sessão
     state.capture_state.set_mic_muted(false);
+    state.capture_state.set_paused(false);
 
     let (chunk_tx, chunk_rx) = mpsc::channel::<AudioChunk>();
     let (stop_tx, stop_rx) = mpsc::channel::<()>();
     *state.stop_tx.lock().unwrap() = Some(stop_tx);
 
     // Inicia captura de áudio (Feature 1: threshold, Feature 5: mic com config separado)
-    let capture_arc = Arc::clone(&state.capture_state);
+    let capture_arc        = Arc::clone(&state.capture_state);
+    let capture_arc_worker = Arc::clone(&state.capture_state);
     let system_config = audio::SystemConfig {
         chunk_duration_secs: settings.chunk_duration_secs,
         silence_threshold: settings.silence_threshold,
@@ -309,6 +312,10 @@ pub async fn start_capture(
 
             match chunk_rx.recv_timeout(std::time::Duration::from_millis(200)) {
                 Ok(chunk) => {
+                    // Descarta chunk sem transcrever quando pausado
+                    if capture_arc_worker.is_paused() {
+                        continue;
+                    }
                     process_chunk(
                         chunk, &provider_str,
                         &whisper_exe, &whisper_model, &language, &api_key,
@@ -521,6 +528,7 @@ pub async fn get_capture_status(state: State<'_, AppState>) -> Result<CaptureSta
         audio_level: *state.capture_state.current_level.lock().unwrap(),
         mic_level: *state.capture_state.mic_level.lock().unwrap(),
         mic_muted: state.capture_state.is_mic_muted(),
+        is_paused: state.capture_state.is_paused(),
         transcript_length: state.transcript.lock().unwrap().len(),
         duration_secs: state
             .capture_start
@@ -540,6 +548,58 @@ pub async fn toggle_mic_mute(state: State<'_, AppState>) -> Result<bool, String>
     state.capture_state.set_mic_muted(new_val);
     log::info!("Microfone {}", if new_val { "mutado" } else { "desmutado" });
     Ok(new_val)
+}
+
+/// Pausa a transcrição (áudio continua sendo capturado, chunks são descartados).
+/// Retorna o novo estado (true = pausado).
+#[tauri::command]
+pub async fn toggle_pause_capture(
+    state: State<'_, AppState>,
+    app: AppHandle,
+) -> Result<bool, String> {
+    let new_val = !state.capture_state.is_paused();
+    state.capture_state.set_paused(new_val);
+    log::info!("Captura {}", if new_val { "pausada" } else { "retomada" });
+    let _ = app.emit("capture-paused", new_val);
+    Ok(new_val)
+}
+
+/// Abre a janela flutuante de compliance (GRAVANDO badge + controles).
+#[tauri::command]
+pub async fn open_compliance_window(app: AppHandle) -> Result<(), String> {
+    if let Some(existing) = app.get_webview_window("compliance") {
+        let _ = existing.show();
+        return Ok(());
+    }
+
+    let url = if cfg!(debug_assertions) {
+        tauri::WebviewUrl::External("http://localhost:1420/#compliance".parse().unwrap())
+    } else {
+        tauri::WebviewUrl::App("index.html#compliance".into())
+    };
+
+    tauri::WebviewWindowBuilder::new(&app, "compliance", url)
+        .title("JGP Meeting — Gravando")
+        .inner_size(310.0, 72.0)
+        .resizable(false)
+        .decorations(false)
+        .transparent(true)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .position(20.0, 20.0)
+        .build()
+        .map_err(|e| format!("Erro ao abrir janela de compliance: {e}"))?;
+
+    Ok(())
+}
+
+/// Fecha a janela flutuante de compliance.
+#[tauri::command]
+pub async fn close_compliance_window(app: AppHandle) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window("compliance") {
+        let _ = win.close();
+    }
+    Ok(())
 }
 
 #[tauri::command]

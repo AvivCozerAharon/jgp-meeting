@@ -33,6 +33,9 @@ fn main() {
             commands::stop_capture,
             commands::get_capture_status,
             commands::toggle_mic_mute,
+            commands::toggle_pause_capture,
+            commands::open_compliance_window,
+            commands::close_compliance_window,
             commands::get_current_transcript,
             // Resumo IA (Feature 8: templates)
             commands::generate_summary,

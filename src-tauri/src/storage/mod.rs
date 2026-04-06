@@ -303,7 +303,10 @@ impl AppSettings {
             mic_chunk_duration_secs: 5.0,
             system_auto_gain: true,
             system_gain_max: 3.0,
-            whisper_prompt: String::new(),
+            whisper_prompt: "JGP, gestora, fundo, renda fixa, ações, multimercado, \
+                FII, NTN-B, IPCA, CDI, benchmark, drawdown, volatilidade, cotista, \
+                mandato, alocação, hedge, debêntures, cupom, duration, spread, \
+                yield, carry, valuation, follow-on, IPO, CVM, B3".to_string(),
             theme: "dark".to_string(),
             jgrc_url: String::new(),
             jgrc_email: String::new(),

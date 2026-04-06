@@ -131,6 +131,8 @@ pub struct AudioCaptureState {
     pub mic_level: Mutex<f32>,
     /// Quando true, o áudio do microfone é silenciado (não misturado ao loopback)
     pub mic_muted: AtomicBool,
+    /// Quando true, chunks chegam mas não são enviados para transcrição
+    pub is_paused: AtomicBool,
 }
 
 impl AudioCaptureState {
@@ -140,6 +142,7 @@ impl AudioCaptureState {
             current_level: Mutex::new(0.0),
             mic_level: Mutex::new(0.0),
             mic_muted: AtomicBool::new(false),
+            is_paused: AtomicBool::new(false),
         }
     }
 
@@ -153,6 +156,14 @@ impl AudioCaptureState {
 
     pub fn set_mic_muted(&self, muted: bool) {
         self.mic_muted.store(muted, Ordering::SeqCst);
+    }
+
+    pub fn is_paused(&self) -> bool {
+        self.is_paused.load(Ordering::SeqCst)
+    }
+
+    pub fn set_paused(&self, paused: bool) {
+        self.is_paused.store(paused, Ordering::SeqCst);
     }
 }
 

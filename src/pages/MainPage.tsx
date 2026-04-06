@@ -5,6 +5,7 @@ import React, { useState, useCallback, useEffect } from "react";
 import clsx from "clsx";
 import { Mic, MicOff, AlertCircle, X, Volume2, VolumeX } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
 import { useAudioCapture } from "@/hooks/useAudioCapture";
 import { useTranscription } from "@/hooks/useTranscription";
 import { useDetection } from "@/hooks/useDetection";
@@ -78,9 +79,11 @@ export const MainPage: React.FC<MainPageProps> = ({ onMeetingSaved, onRecordingC
     transcriptionActions.unmuteUpdates(); // Volta a escutar atualizações
     transcriptionActions.clearTranscript();
     await captureActions.start(meetingType);
+    invoke("open_compliance_window").catch(console.error);
   }, [captureActions, transcriptionActions, meetingType]);
 
   const handleStop = useCallback(async () => {
+    invoke("close_compliance_window").catch(console.error);
     const meetingId = await captureActions.stop();
     if (meetingId) onMeetingSaved?.(meetingId);
     // Limpa a tela para a próxima reunião.
