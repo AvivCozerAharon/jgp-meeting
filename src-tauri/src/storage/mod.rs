@@ -413,15 +413,30 @@ pub fn load_settings() -> Result<AppSettings> {
     // Decrypt sensitive fields. On failure (e.g. old plain-text settings),
     // reset field to empty string so the user can re-enter the key.
     settings.openai_api_key =
-        crate::crypto::decrypt_string(&settings.openai_api_key).unwrap_or_default();
+        crate::crypto::decrypt_string(&settings.openai_api_key).unwrap_or_else(|e| {
+            log::warn!("openai_api_key decrypt failed (resetting to empty): {e}");
+            String::new()
+        });
     settings.groq_api_key =
-        crate::crypto::decrypt_string(&settings.groq_api_key).unwrap_or_default();
+        crate::crypto::decrypt_string(&settings.groq_api_key).unwrap_or_else(|e| {
+            log::warn!("groq_api_key decrypt failed (resetting to empty): {e}");
+            String::new()
+        });
     settings.openrouter_api_key =
-        crate::crypto::decrypt_string(&settings.openrouter_api_key).unwrap_or_default();
+        crate::crypto::decrypt_string(&settings.openrouter_api_key).unwrap_or_else(|e| {
+            log::warn!("openrouter_api_key decrypt failed (resetting to empty): {e}");
+            String::new()
+        });
     settings.google_cloud_api_key =
-        crate::crypto::decrypt_string(&settings.google_cloud_api_key).unwrap_or_default();
+        crate::crypto::decrypt_string(&settings.google_cloud_api_key).unwrap_or_else(|e| {
+            log::warn!("google_cloud_api_key decrypt failed (resetting to empty): {e}");
+            String::new()
+        });
     settings.jgrc_session_cookie =
-        crate::crypto::decrypt_string(&settings.jgrc_session_cookie).unwrap_or_default();
+        crate::crypto::decrypt_string(&settings.jgrc_session_cookie).unwrap_or_else(|e| {
+            log::warn!("jgrc_session_cookie decrypt failed (resetting to empty): {e}");
+            String::new()
+        });
 
     Ok(settings)
 }
@@ -454,9 +469,15 @@ pub fn save_settings(settings: &AppSettings) -> Result<()> {
 #[cfg(windows)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+    static SETTINGS_FILE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    fn settings_test_lock() -> &'static Mutex<()> {
+        SETTINGS_FILE_LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     #[test]
     fn test_save_load_roundtrip_encrypts_sensitive_fields() {
+        let _guard = settings_test_lock().lock().unwrap();
         // Save settings with a known API key
         let mut settings = AppSettings::with_defaults();
         settings.openai_api_key = "sk-roundtrip-test-key".to_string();
@@ -482,11 +503,12 @@ mod tests {
         assert_eq!(loaded.groq_api_key, "gsk-roundtrip-groq");
 
         // Clean up: restore empty settings
-        save_settings(&AppSettings::with_defaults()).unwrap();
+        let _ = save_settings(&AppSettings::with_defaults());
     }
 
     #[test]
     fn test_plaintext_keys_in_old_settings_return_empty_on_load() {
+        let _guard = settings_test_lock().lock().unwrap();
         // Simulate a pre-encryption settings.json by writing plain-text JSON directly
         let path = settings_file_path().unwrap();
         let old = AppSettings::with_defaults();
@@ -503,6 +525,6 @@ mod tests {
         );
 
         // Clean up
-        save_settings(&AppSettings::with_defaults()).unwrap();
+        let _ = save_settings(&AppSettings::with_defaults());
     }
 }
