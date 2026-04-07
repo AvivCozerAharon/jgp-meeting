@@ -60,6 +60,8 @@ windows = { version = "0.52", features = [
     "Win32_System_Variant",                # VARIANT (dentro de PROPVARIANT)
     "Win32_Devices_Properties",            # DEVPKEY_Device_FriendlyName (listagem de mics)
     "Win32_UI_Shell_PropertiesSystem",      # IPropertyStore (OpenPropertyStore em IMMDevice)
+    "Win32_Security_Cryptography",          # CryptProtectData, CryptUnprotectData (DPAPI)
+    "Win32_System_Memory",                  # LocalFree (free DPAPI output blob)
 ] }
 
 [profile.dev]
