@@ -75,6 +75,10 @@ fn main() {
             commands::jgrc_open_login,
             commands::jgrc_check_session,
             commands::jgrc_get_export_data,
+            // Tags
+            commands::get_tags,
+            commands::save_tags,
+            commands::update_meeting_tags,
         ])
         .setup(|app| {
             #[cfg(debug_assertions)]

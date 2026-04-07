@@ -1749,3 +1749,24 @@ pub async fn list_downloaded_whisper_models() -> Result<Vec<String>, String> {
 
     Ok(models)
 }
+
+#[tauri::command]
+pub async fn get_tags() -> Result<Vec<storage::Tag>, String> {
+    storage::load_tags().map_err(|e| format!("Erro ao carregar tags: {e}"))
+}
+
+#[tauri::command]
+pub async fn save_tags(tags: Vec<storage::Tag>) -> Result<(), String> {
+    storage::save_tags(&tags).map_err(|e| format!("Erro ao salvar tags: {e}"))
+}
+
+#[tauri::command]
+pub async fn update_meeting_tags(
+    meeting_id: String,
+    tag_ids: Vec<String>,
+) -> Result<(), String> {
+    let mut meeting = storage::load_meeting(&meeting_id)
+        .map_err(|e| format!("Reunião não encontrada: {e}"))?;
+    meeting.tags = tag_ids;
+    storage::save_meeting(&meeting).map_err(|e| format!("Erro ao salvar reunião: {e}"))
+}
