@@ -190,4 +190,22 @@ fn setup_global_shortcut(app: &mut tauri::App) {
             log::info!("Atalho mute mic '{mute_hotkey}' registrado");
         }
     }
+
+    // Atalho de pause/resume transcrição
+    let pause_hotkey = settings.pause_hotkey.clone();
+    if !pause_hotkey.is_empty() {
+        let app_handle = app.handle().clone();
+        if let Err(e) = app.global_shortcut().on_shortcut(
+            pause_hotkey.as_str(),
+            move |_app, _s, event| {
+                if event.state() == ShortcutState::Pressed {
+                    let _ = app_handle.emit("toggle-pause", ());
+                }
+            },
+        ) {
+            log::warn!("Falha ao registrar atalho pause '{pause_hotkey}': {e}");
+        } else {
+            log::info!("Atalho pause '{pause_hotkey}' registrado");
+        }
+    }
 }

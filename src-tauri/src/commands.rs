@@ -1552,6 +1552,7 @@ pub async fn register_global_shortcut(
     app: AppHandle,
     shortcut: String,
     mute_shortcut: Option<String>,
+    pause_shortcut: Option<String>,
 ) -> Result<(), String> {
     use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
@@ -1582,6 +1583,20 @@ pub async fn register_global_shortcut(
                     }
                 })
                 .map_err(|e| format!("Erro ao registrar atalho mute '{}': {}", mute, e))?;
+        }
+    }
+
+    // Atalho de pause/resume transcrição
+    if let Some(ref pause) = pause_shortcut {
+        if !pause.is_empty() {
+            let app_clone = app.clone();
+            app.global_shortcut()
+                .on_shortcut(pause.as_str(), move |_app, _s, event| {
+                    if event.state() == ShortcutState::Pressed {
+                        let _ = app_clone.emit("toggle-pause", ());
+                    }
+                })
+                .map_err(|e| format!("Erro ao registrar atalho pause '{}': {}", pause, e))?;
         }
     }
 

@@ -145,6 +145,10 @@ pub struct AppSettings {
     #[serde(default = "default_mute_hotkey")]
     pub mute_mic_hotkey: String,
 
+    /// Atalho global para pausar/retomar transcrição (ex: "ctrl+shift+p")
+    #[serde(default = "default_pause_hotkey")]
+    pub pause_hotkey: String,
+
     /// Feature 15: gerar resumo automaticamente ao parar a gravação
     #[serde(default)]
     pub auto_summary: bool,
@@ -232,6 +236,10 @@ fn default_mute_hotkey() -> String {
     "ctrl+shift+m".to_string()
 }
 
+fn default_pause_hotkey() -> String {
+    "ctrl+shift+p".to_string()
+}
+
 fn default_transcription_provider() -> String {
     "openai".to_string()
 }
@@ -294,6 +302,7 @@ impl AppSettings {
             default_meeting_type: MeetingType::General,
             global_hotkey: "ctrl+shift+r".to_string(),
             mute_mic_hotkey: "ctrl+shift+m".to_string(),
+            pause_hotkey: "ctrl+shift+p".to_string(),
             auto_summary: false,
             local_models_dir: String::new(),
             selected_microphone: String::new(),
