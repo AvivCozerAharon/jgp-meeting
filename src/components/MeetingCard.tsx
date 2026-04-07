@@ -11,7 +11,7 @@ import {
   ChevronRight,
   CheckCircle2,
 } from "lucide-react";
-import type { Meeting } from "@/types";
+import type { Meeting, Tag } from "@/types";
 import { formatMeetingDate, formatMeetingDuration, transcriptPreview } from "@/services/storageService";
 import { Spinner } from "./LoadingSpinner";
 
@@ -22,6 +22,7 @@ interface MeetingCardProps {
   onGenerateSummary?: (id: string) => void;
   isGeneratingSummary?: boolean;
   className?: string;
+  allTags?: Tag[];
 }
 
 export const MeetingCard: React.FC<MeetingCardProps> = ({
@@ -31,6 +32,7 @@ export const MeetingCard: React.FC<MeetingCardProps> = ({
   onGenerateSummary,
   isGeneratingSummary = false,
   className,
+  allTags,
 }) => {
   const hasSummary = !!meeting.summary;
   const preview = transcriptPreview(meeting.transcript, 20);
@@ -82,6 +84,26 @@ export const MeetingCard: React.FC<MeetingCardProps> = ({
           <p className="mt-0.5 text-xs text-surface-400 dark:text-surface-500 truncate">
             {preview}
           </p>
+        )}
+        {allTags && allTags.length > 0 && meeting.tags && meeting.tags.length > 0 && (
+          <div className="flex flex-wrap gap-1 mt-1">
+            {meeting.tags.map((tagId) => {
+              const tag = allTags.find((t) => t.id === tagId);
+              if (!tag) return null;
+              return (
+                <span
+                  key={tagId}
+                  className="flex items-center gap-1 px-1.5 py-0.5 rounded text-xs bg-surface-100 dark:bg-surface-700/60 text-surface-700 dark:text-surface-300"
+                >
+                  <span
+                    className="w-2 h-2 rounded-full flex-shrink-0"
+                    style={{ backgroundColor: tag.color }}
+                  />
+                  {tag.name}
+                </span>
+              );
+            })}
+          </div>
         )}
       </div>
 
