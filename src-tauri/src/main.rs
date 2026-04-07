@@ -4,6 +4,7 @@
 mod ai;
 mod audio;
 mod commands;
+mod crypto;
 mod detection;
 mod export;
 mod storage;
