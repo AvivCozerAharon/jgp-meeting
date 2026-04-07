@@ -3,7 +3,7 @@
 
 import React, { useState, useCallback, useEffect } from "react";
 import clsx from "clsx";
-import { Mic, MicOff, AlertCircle, X, Volume2, VolumeX } from "lucide-react";
+import { Mic, MicOff, AlertCircle, X, Volume2, VolumeX, Pause, Play } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { useAudioCapture } from "@/hooks/useAudioCapture";
@@ -28,7 +28,7 @@ export const MainPage: React.FC<MainPageProps> = ({ onMeetingSaved, onRecordingC
   const [meetingType, setMeetingType] = useState<MeetingType>('general');
   const [micActive, setMicActive] = useState(false);
 
-  const { isCapturing, audioLevel, micLevel, micMuted, isProcessing, error, duration } = captureState;
+  const { isCapturing, audioLevel, micLevel, micMuted, isProcessing, error, duration, isPaused } = captureState;
 
   // Reporta estado de gravação ao App.tsx (para o indicador na Navigation)
   useEffect(() => {
@@ -73,6 +73,16 @@ export const MainPage: React.FC<MainPageProps> = ({ onMeetingSaved, onRecordingC
     }).then(fn => { unlisten = fn; }).catch(console.error);
     return () => { unlisten?.(); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isCapturing, captureActions]);
+
+  // Escuta atalho global (toggle-pause)
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    listen<void>('toggle-pause', () => {
+      if (isCapturing) captureActions.togglePause();
+    }).then(fn => { unlisten = fn; }).catch(console.error);
+    return () => { unlisten?.(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isCapturing, captureActions]);
 
   const handleStart = useCallback(async () => {
@@ -248,6 +258,33 @@ export const MainPage: React.FC<MainPageProps> = ({ onMeetingSaved, onRecordingC
                     <>
                       <Mic className="w-3.5 h-3.5" />
                       Mic On
+                    </>
+                  )}
+                </button>
+              )}
+
+              {/* Botão Pausar/Retomar transcrição */}
+              {isCapturing && (
+                <button
+                  onClick={captureActions.togglePause}
+                  title={isPaused ? "Retomar transcrição (Ctrl+Shift+P)" : "Pausar transcrição (Ctrl+Shift+P)"}
+                  className={clsx(
+                    "flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium",
+                    "transition-all duration-150 border",
+                    isPaused
+                      ? "bg-amber-50 dark:bg-amber-500/10 border-amber-200 dark:border-amber-500/20 text-amber-600 dark:text-amber-400 hover:bg-amber-100 dark:hover:bg-amber-500/20"
+                      : "bg-surface-50 dark:bg-surface-700/50 border-surface-200 dark:border-surface-600 text-surface-600 dark:text-surface-300 hover:bg-surface-100 dark:hover:bg-surface-700"
+                  )}
+                >
+                  {isPaused ? (
+                    <>
+                      <Play className="w-3.5 h-3.5" />
+                      Retomar
+                    </>
+                  ) : (
+                    <>
+                      <Pause className="w-3.5 h-3.5" />
+                      Pausar
                     </>
                   )}
                 </button>
