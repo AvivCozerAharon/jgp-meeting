@@ -48,6 +48,16 @@ impl MeetingType {
     }
 }
 
+// ─── Tag ──────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Tag {
+    pub id: String,
+    pub name: String,
+    /// One of the 10 fixed hex color values from the frontend palette
+    pub color: String,
+}
+
 // ─── Meeting ──────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -66,6 +76,9 @@ pub struct Meeting {
     /// ID do evento no JGRC após exportação (None = ainda não exportado)
     #[serde(default)]
     pub jgrc_event_id: Option<String>,
+    /// Tags aplicadas à reunião (lista de IDs de Tag)
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 impl Meeting {
@@ -81,6 +94,7 @@ impl Meeting {
             meeting_type: None,
             speakers: None,
             jgrc_event_id: None,
+            tags: Vec::new(),
         }
     }
 }
@@ -353,6 +367,27 @@ fn meeting_file_path(id: &str) -> Result<PathBuf> {
 
 fn settings_file_path() -> Result<PathBuf> {
     Ok(app_data_dir()?.join("settings.json"))
+}
+
+fn tags_file_path() -> Result<PathBuf> {
+    Ok(app_data_dir()?.join("tags.json"))
+}
+
+pub fn load_tags() -> Result<Vec<Tag>> {
+    let path = tags_file_path()?;
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let json = fs::read_to_string(&path).context("Falha ao ler tags")?;
+    serde_json::from_str(&json).context("Falha ao parsear tags")
+}
+
+pub fn save_tags(tags: &[Tag]) -> Result<()> {
+    let path = tags_file_path()?;
+    let json = serde_json::to_string_pretty(tags).context("Falha ao serializar tags")?;
+    fs::write(&path, json).context("Falha ao salvar tags")?;
+    log::info!("Tags salvas ({} tags)", tags.len());
+    Ok(())
 }
 
 // ─── Reuniões ─────────────────────────────────────────────────────────────────
