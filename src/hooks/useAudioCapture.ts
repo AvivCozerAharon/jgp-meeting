@@ -23,6 +23,7 @@ export interface AudioCaptureState {
   error: string | null;
   duration: number;
   lastMeetingId: string | null;
+  isPaused: boolean;
 }
 
 export interface AudioCaptureActions {
@@ -32,6 +33,7 @@ export interface AudioCaptureActions {
   /** Muta/desmuta o microfone durante a gravação */
   toggleMicMute: () => Promise<void>;
   clearError: () => void;
+  togglePause: () => Promise<void>;
 }
 
 /**
@@ -47,6 +49,7 @@ export function useAudioCapture(): [AudioCaptureState, AudioCaptureActions] {
   const [error, setError] = useState<string | null>(null);
   const [duration, setDuration] = useState(0);
   const [lastMeetingId, setLastMeetingId] = useState<string | null>(null);
+  const [isPaused, setIsPaused] = useState(false);
 
   // Refs para listeners (para cleanup no unmount)
   const unlisteners = useRef<UnlistenFn[]>([]);
@@ -82,10 +85,15 @@ export function useAudioCapture(): [AudioCaptureState, AudioCaptureActions] {
           setAudioLevel(0);
           setIsProcessing(false);
           setLastMeetingId(e.payload);
+          setIsPaused(false);
         }
       });
 
-      unlisteners.current = [unlistenLevel, unlistenMic, unlistenProcessing, unlistenError, unlistenStopped];
+      const unlistenPaused = await listen<boolean>("capture-paused", (e) => {
+        if (isMounted) setIsPaused(e.payload);
+      });
+
+      unlisteners.current = [unlistenLevel, unlistenMic, unlistenProcessing, unlistenError, unlistenStopped, unlistenPaused];
     };
 
     setupListeners().catch(console.error);
@@ -121,6 +129,7 @@ export function useAudioCapture(): [AudioCaptureState, AudioCaptureActions] {
     setDuration(0);
     setLastMeetingId(null);
     setMicMuted(false); // Reset mic muted ao iniciar
+    setIsPaused(false);
     try {
       await startCapture(meetingType);
       setIsCapturing(true);
@@ -155,10 +164,19 @@ export function useAudioCapture(): [AudioCaptureState, AudioCaptureActions] {
     }
   }, []);
 
+  const togglePause = useCallback(async () => {
+    try {
+      const paused = await invoke<boolean>("toggle_pause_capture");
+      setIsPaused(paused);
+    } catch (err) {
+      console.error("Erro ao pausar/retomar transcrição:", err);
+    }
+  }, []);
+
   const clearError = useCallback(() => setError(null), []);
 
   return [
-    { isCapturing, audioLevel, micLevel, micMuted, isProcessing, error, duration, lastMeetingId },
-    { start, stop, toggleMicMute, clearError },
+    { isCapturing, audioLevel, micLevel, micMuted, isProcessing, error, duration, lastMeetingId, isPaused },
+    { start, stop, toggleMicMute, clearError, togglePause },
   ];
 }
