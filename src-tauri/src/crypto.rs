@@ -27,7 +27,7 @@ pub fn encrypt_string(plaintext: &str) -> Result<String, String> {
 
     let mut input_data = plaintext.as_bytes().to_vec();
     let input_blob = CRYPT_INTEGER_BLOB {
-        cbData: input_data.len() as u32,
+        cbData: input_data.len() as u32, // safe: API keys are never > 4 GB
         pbData: input_data.as_mut_ptr(),
     };
     let mut output_blob = CRYPT_INTEGER_BLOB {
@@ -36,7 +36,7 @@ pub fn encrypt_string(plaintext: &str) -> Result<String, String> {
     };
 
     unsafe {
-        CryptProtectData(
+        let result = CryptProtectData(
             &input_blob,
             PCWSTR::null(),
             None,
@@ -44,8 +44,13 @@ pub fn encrypt_string(plaintext: &str) -> Result<String, String> {
             None::<*const CRYPTPROTECT_PROMPTSTRUCT>,
             0u32,
             &mut output_blob,
-        )
-        .map_err(|e| format!("DPAPI encrypt failed: {e}"))?;
+        );
+        if result.is_err() {
+            if !output_blob.pbData.is_null() {
+                let _ = LocalFree(HLOCAL(output_blob.pbData as *mut std::ffi::c_void));
+            }
+            return Err(format!("DPAPI encrypt failed: {}", result.unwrap_err()));
+        }
 
         let encrypted: Vec<u8> =
             std::slice::from_raw_parts(output_blob.pbData, output_blob.cbData as usize)
@@ -71,7 +76,7 @@ pub fn decrypt_string(encoded: &str) -> Result<String, String> {
         .map_err(|e| format!("Base64 decode failed: {e}"))?;
 
     let input_blob = CRYPT_INTEGER_BLOB {
-        cbData: encrypted.len() as u32,
+        cbData: encrypted.len() as u32, // safe: API keys are never > 4 GB
         pbData: encrypted.as_mut_ptr(),
     };
     let mut output_blob = CRYPT_INTEGER_BLOB {
@@ -80,7 +85,7 @@ pub fn decrypt_string(encoded: &str) -> Result<String, String> {
     };
 
     unsafe {
-        CryptUnprotectData(
+        let result = CryptUnprotectData(
             &input_blob,
             None,
             None,
@@ -88,8 +93,13 @@ pub fn decrypt_string(encoded: &str) -> Result<String, String> {
             None::<*const CRYPTPROTECT_PROMPTSTRUCT>,
             0u32,
             &mut output_blob,
-        )
-        .map_err(|e| format!("DPAPI decrypt failed: {e}"))?;
+        );
+        if result.is_err() {
+            if !output_blob.pbData.is_null() {
+                let _ = LocalFree(HLOCAL(output_blob.pbData as *mut std::ffi::c_void));
+            }
+            return Err(format!("DPAPI decrypt failed: {}", result.unwrap_err()));
+        }
 
         let plaintext_bytes: Vec<u8> =
             std::slice::from_raw_parts(output_blob.pbData, output_blob.cbData as usize)
@@ -130,7 +140,7 @@ mod tests {
     #[test]
     fn test_valid_base64_but_invalid_dpapi_returns_err() {
         // Valid base64, but the bytes are not a DPAPI blob
-        let fake = base64::engine::general_purpose::STANDARD.encode(b"garbage bytes");
+        let fake = STANDARD.encode(b"garbage bytes");
         let result = decrypt_string(&fake);
         assert!(result.is_err());
     }
