@@ -3,7 +3,7 @@
 // relacionados ao histórico de reuniões e configurações.
 
 import { invoke } from "@tauri-apps/api/core";
-import type { Meeting, AppSettings } from "@/types";
+import type { Meeting, AppSettings, Tag } from "@/types";
 
 // ─── Reuniões ─────────────────────────────────────────────────────────────────
 
@@ -80,4 +80,18 @@ export function transcriptPreview(transcript: string, wordCount = 20): string {
   const words = transcript.split(/\s+/).slice(0, wordCount);
   const preview = words.join(" ");
   return transcript.split(/\s+/).length > wordCount ? `${preview}...` : preview;
+}
+
+// ─── Tags ─────────────────────────────────────────────────────────────────────
+
+export async function getTags(): Promise<Tag[]> {
+  return invoke<Tag[]>("get_tags");
+}
+
+export async function saveTags(tags: Tag[]): Promise<void> {
+  return invoke<void>("save_tags", { tags });
+}
+
+export async function updateMeetingTags(meetingId: string, tagIds: string[]): Promise<void> {
+  return invoke<void>("update_meeting_tags", { meetingId, tagIds });
 }

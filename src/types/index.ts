@@ -29,6 +29,27 @@ export const MEETING_TYPE_ICONS: Record<MeetingType, string> = {
   interview:     '🎯',
 };
 
+// ─── Tags ─────────────────────────────────────────────────────────────────────
+
+export interface Tag {
+  id: string;
+  name: string;
+  color: string;
+}
+
+export const TAG_COLORS = [
+  "#ef4444", // Vermelho
+  "#f97316", // Laranja
+  "#eab308", // Amarelo
+  "#22c55e", // Verde
+  "#14b8a6", // Turquesa
+  "#3b82f6", // Azul
+  "#6366f1", // Índigo
+  "#a855f7", // Roxo
+  "#ec4899", // Rosa
+  "#6b7280", // Cinza
+] as const;
+
 // ─── Feature 10: Diarização ───────────────────────────────────────────────────
 
 export interface SpeakerSegment {
@@ -61,6 +82,8 @@ export interface Meeting {
   speakers?: SpeakerSegment[] | null;
   /** ID do evento no JGRC após exportação */
   jgrc_event_id?: string | null;
+  /** Tags associadas à reunião (IDs) */
+  tags?: string[];
 }
 
 // ─── Configurações ────────────────────────────────────────────────────────────
