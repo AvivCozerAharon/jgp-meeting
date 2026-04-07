@@ -92,6 +92,8 @@ export interface AppSettings {
   global_hotkey: string;
   /** Atalho global para mutar/desmutar mic (ex: "ctrl+shift+m") */
   mute_mic_hotkey: string;
+  /** Atalho global para pausar/retomar transcrição (ex: "ctrl+shift+p") */
+  pause_hotkey: string;
   /** Feature 15: gerar resumo automaticamente ao parar */
   auto_summary: boolean;
   /** Download de modelo Whisper: diretório dos modelos */

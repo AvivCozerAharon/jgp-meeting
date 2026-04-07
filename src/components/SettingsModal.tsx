@@ -116,6 +116,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ className, activeT
     default_meeting_type: "general",
     global_hotkey: "ctrl+shift+r",
     mute_mic_hotkey: "ctrl+shift+m",
+    pause_hotkey: "ctrl+shift+p",
     auto_summary: false,
     local_models_dir: "",
     selected_microphone: "",
@@ -852,6 +853,29 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ className, activeT
         />
         <p className="text-xs text-surface-400 dark:text-surface-500 mt-1">
           Exemplos: ctrl+shift+m · alt+m · ctrl+alt+m
+        </p>
+      </SettingSection>
+
+      {/* Atalho Pausar/Retomar Transcrição */}
+      <SettingSection
+        icon={<Keyboard className="w-4 h-4 text-surface-500" />}
+        title="Pausar/Retomar Transcrição"
+        description="Atalho global para pausar ou retomar a transcrição sem parar a gravação. Salve e reinicie o app para aplicar."
+      >
+        <input
+          type="text"
+          value={settings.pause_hotkey ?? "ctrl+shift+p"}
+          onChange={(e) => updateSetting("pause_hotkey", e.target.value)}
+          placeholder="ctrl+shift+p"
+          className={clsx(
+            "w-full px-3 py-2.5 text-sm rounded-xl border font-mono",
+            "border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-800/60 text-surface-800 dark:text-surface-200",
+            "focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent",
+            "placeholder:text-surface-300 dark:placeholder:text-surface-600"
+          )}
+        />
+        <p className="text-xs text-surface-400 dark:text-surface-500 mt-1">
+          Exemplos: ctrl+shift+p · alt+p · ctrl+alt+p
         </p>
       </SettingSection>
       </>)}
