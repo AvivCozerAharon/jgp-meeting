@@ -30,18 +30,37 @@ import { ExportMenu } from "@/components/ExportMenu";
 import { FollowupEmail } from "@/components/FollowupEmail";
 import { TranscriptQA } from "@/components/TranscriptQA";
 import { JgrcExportModal } from "@/components/JgrcExportModal";
+import { TagPicker } from "@/components/TagPicker";
 import { parseTranscript } from "@/components/TranscriptionPanel";
-import { getSettings, formatMeetingDate, formatMeetingDuration } from "@/services/storageService";
-import type { Meeting, AppSettings } from "@/types";
+import { getSettings, getTags, formatMeetingDate, formatMeetingDuration } from "@/services/storageService";
+import type { Meeting, AppSettings, Tag } from "@/types";
 
 export const HistoryPage: React.FC = () => {
   const [state, actions] = useMeetingHistory();
   const { meetings, allMeetings, isLoading, selectedMeeting, isGeneratingSummary, error, searchQuery } = state;
 
+  const [allTags, setAllTags] = useState<Tag[]>([]);
+  const [activeTagFilter, setActiveTagFilter] = useState<string | null>(null);
+
+  useEffect(() => {
+    getTags().then(setAllTags).catch(console.error);
+  }, []);
+
+  const filteredMeetings = useMemo(
+    () => meetings.filter(m => !activeTagFilter || (m.tags ?? []).includes(activeTagFilter)),
+    [meetings, activeTagFilter]
+  );
+
+  const usedTags = useMemo(
+    () => allTags.filter(tag => allMeetings.some(m => (m.tags ?? []).includes(tag.id))),
+    [allTags, allMeetings]
+  );
+
   if (selectedMeeting) {
     return (
       <MeetingDetailView
         meeting={selectedMeeting}
+        allTags={allTags}
         onBack={actions.closeMeeting}
         onGenerateSummary={actions.generateSummary}
         isGeneratingSummary={isGeneratingSummary}
@@ -49,6 +68,11 @@ export const HistoryPage: React.FC = () => {
         onClearError={actions.clearError}
         onUpdateMeta={actions.updateMeta}
         onExportToJgrc={actions.exportToJgrc}
+        onTagsChange={(meetingId, newIds) => {
+          actions.refresh();
+          void meetingId;
+          void newIds;
+        }}
       />
     );
   }
@@ -65,7 +89,7 @@ export const HistoryPage: React.FC = () => {
             </h1>
             {allMeetings.length > 0 && (
               <span className="px-2 py-0.5 rounded-full bg-surface-100 dark:bg-surface-800 text-xs font-medium text-surface-600 dark:text-surface-400">
-                {searchQuery ? `${meetings.length} / ${allMeetings.length}` : allMeetings.length}
+                {searchQuery || activeTagFilter ? `${filteredMeetings.length} / ${allMeetings.length}` : allMeetings.length}
               </span>
             )}
           </div>
@@ -105,6 +129,38 @@ export const HistoryPage: React.FC = () => {
             </button>
           )}
         </div>
+
+        {/* Tag filter bar */}
+        {usedTags.length > 0 && (
+          <div className="flex flex-wrap gap-1.5 mt-3">
+            <button
+              onClick={() => setActiveTagFilter(null)}
+              className={clsx(
+                "flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border transition-all",
+                activeTagFilter === null
+                  ? "border-primary-500 bg-primary-50 dark:bg-primary-500/10 text-primary-700 dark:text-primary-300"
+                  : "border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-800 text-surface-600 dark:text-surface-400 hover:border-surface-300"
+              )}
+            >
+              Todas
+            </button>
+            {usedTags.map((tag) => (
+              <button
+                key={tag.id}
+                onClick={() => setActiveTagFilter(tag.id === activeTagFilter ? null : tag.id)}
+                className={clsx(
+                  "flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border transition-all",
+                  activeTagFilter === tag.id
+                    ? "border-primary-500 bg-primary-50 dark:bg-primary-500/10 text-primary-700 dark:text-primary-300"
+                    : "border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-800 text-surface-600 dark:text-surface-400 hover:border-surface-300"
+                )}
+              >
+                <span className="w-2 h-2 rounded-full" style={{ backgroundColor: tag.color }} />
+                {tag.name}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Erro */}
@@ -122,11 +178,11 @@ export const HistoryPage: React.FC = () => {
       <div className="flex-1 overflow-y-auto p-6">
         {isLoading ? (
           <LoadingOverlay message="Carregando reuniões..." className="h-40" />
-        ) : meetings.length === 0 ? (
+        ) : filteredMeetings.length === 0 ? (
           <EmptyHistory />
         ) : (
           <div className="flex flex-col gap-1">
-            {meetings.map((meeting) => (
+            {filteredMeetings.map((meeting) => (
               <MeetingCard
                 key={meeting.id}
                 meeting={meeting}
@@ -134,6 +190,7 @@ export const HistoryPage: React.FC = () => {
                 onDelete={actions.remove}
                 onGenerateSummary={actions.generateSummary}
                 isGeneratingSummary={isGeneratingSummary}
+                allTags={allTags}
               />
             ))}
           </div>
@@ -149,6 +206,7 @@ type DetailTab = 'summary' | 'email' | 'qa';
 
 interface MeetingDetailViewProps {
   meeting: Meeting;
+  allTags: Tag[];
   onBack: () => void;
   onGenerateSummary: (id: string) => Promise<void>;
   isGeneratingSummary: boolean;
@@ -156,10 +214,12 @@ interface MeetingDetailViewProps {
   onClearError: () => void;
   onUpdateMeta: (id: string, title?: string, transcript?: string) => Promise<void>;
   onExportToJgrc: (meetingId: string) => Promise<string>;
+  onTagsChange: (meetingId: string, newTagIds: string[]) => void;
 }
 
 const MeetingDetailView: React.FC<MeetingDetailViewProps> = ({
   meeting,
+  allTags,
   onBack,
   onGenerateSummary,
   isGeneratingSummary,
@@ -167,6 +227,7 @@ const MeetingDetailView: React.FC<MeetingDetailViewProps> = ({
   onClearError,
   onUpdateMeta,
   onExportToJgrc: _onExportToJgrc,
+  onTagsChange,
 }) => {
   const [tab, setTab] = useState<DetailTab>('summary');
   const [settings, setSettings] = useState<Partial<AppSettings>>({});
@@ -477,6 +538,16 @@ const MeetingDetailView: React.FC<MeetingDetailViewProps> = ({
 
         {/* Painel direito: abas */}
         <div className="w-80 flex-shrink-0 flex flex-col gap-3">
+          {/* Tags */}
+          <div className="bg-white dark:bg-surface-800/60 border border-surface-100 dark:border-surface-700/50 rounded-xl shadow-card dark:shadow-none px-4 py-2.5 flex-shrink-0 flex items-center gap-2">
+            <TagPicker
+              meetingId={meeting.id}
+              currentTagIds={meeting.tags ?? []}
+              allTags={allTags}
+              onTagsChange={(newIds) => onTagsChange(meeting.id, newIds)}
+            />
+          </div>
+
           {/* Seletor de abas */}
           <div className="flex bg-white dark:bg-surface-800/60 border border-surface-100 dark:border-surface-700/50 rounded-xl shadow-card dark:shadow-none overflow-hidden flex-shrink-0">
             <TabButton active={tab === 'summary'} onClick={() => setTab('summary')} icon={<LayoutList className="w-3.5 h-3.5" />} label="Resumo" />

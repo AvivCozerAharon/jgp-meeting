@@ -38,6 +38,7 @@ import type { Theme } from "@/hooks/useTheme";
 import { MEETING_TYPE_LABELS, MEETING_TYPE_ICONS } from "@/types";
 import { getSettings, saveSettings } from "@/services/storageService";
 import { Spinner } from "./LoadingSpinner";
+import { TagManager } from "./TagManager";
 
 const ALL_MEETING_TYPES: MeetingType[] = [
   'general', 'standup', 'one_on_one', 'retrospective', 'commercial', 'interview',
@@ -139,6 +140,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ className, activeT
   const [saveStatus, setSaveStatus] = useState<"idle" | "success" | "error">("idle");
   const [showKey, setShowKey] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [showTagManager, setShowTagManager] = useState(false);
 
   // Lista de microfones disponíveis no sistema
   const [microphones, setMicrophones] = useState<AudioDevice[]>([]);
@@ -482,6 +484,20 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ className, activeT
             {settings.auto_summary ? "Ativado" : "Desativado"}
           </span>
         </label>
+      </SettingSection>
+
+      {/* Tags */}
+      <SettingSection
+        icon={<LayoutGrid className="w-4 h-4 text-surface-500 dark:text-surface-400" />}
+        title="Tags"
+        description="Crie e gerencie tags coloridas para organizar suas reuniões."
+      >
+        <button
+          onClick={() => setShowTagManager(true)}
+          className="px-4 py-2 text-sm font-medium rounded-xl bg-primary-600 hover:bg-primary-700 text-white transition-colors"
+        >
+          Gerenciar Tags
+        </button>
       </SettingSection>
 
       </>)}
@@ -921,6 +937,8 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ className, activeT
           )}
         </button>
       </div>
+
+      <TagManager isOpen={showTagManager} onClose={() => setShowTagManager(false)} />
     </div>
   );
 };
