@@ -406,17 +406,103 @@ pub fn load_settings() -> Result<AppSettings> {
         return Ok(AppSettings::with_defaults());
     }
     let json = fs::read_to_string(&path).context("Falha ao ler configurações")?;
-    // Se o JSON estiver desatualizado (campos novos faltando), usa defaults
-    serde_json::from_str(&json)
+    let mut settings: AppSettings = serde_json::from_str(&json)
         .context("Falha ao parsear configurações")
-        .or_else(|_| Ok(AppSettings::with_defaults()))
+        .or_else(|_| Ok::<AppSettings, anyhow::Error>(AppSettings::with_defaults()))?;
+
+    // Decrypt sensitive fields. On failure (e.g. old plain-text settings),
+    // reset field to empty string so the user can re-enter the key.
+    settings.openai_api_key =
+        crate::crypto::decrypt_string(&settings.openai_api_key).unwrap_or_default();
+    settings.groq_api_key =
+        crate::crypto::decrypt_string(&settings.groq_api_key).unwrap_or_default();
+    settings.openrouter_api_key =
+        crate::crypto::decrypt_string(&settings.openrouter_api_key).unwrap_or_default();
+    settings.google_cloud_api_key =
+        crate::crypto::decrypt_string(&settings.google_cloud_api_key).unwrap_or_default();
+    settings.jgrc_session_cookie =
+        crate::crypto::decrypt_string(&settings.jgrc_session_cookie).unwrap_or_default();
+
+    Ok(settings)
 }
 
 pub fn save_settings(settings: &AppSettings) -> Result<()> {
     let path = settings_file_path()?;
-    let json = serde_json::to_string_pretty(settings)
+
+    // Clone and encrypt sensitive fields before serializing to disk.
+    // If any encryption fails, abort — never write a partially-protected file.
+    let mut storable = settings.clone();
+    storable.openai_api_key = crate::crypto::encrypt_string(&settings.openai_api_key)
+        .map_err(|e| anyhow::anyhow!("Falha ao encriptar openai_api_key: {e}"))?;
+    storable.groq_api_key = crate::crypto::encrypt_string(&settings.groq_api_key)
+        .map_err(|e| anyhow::anyhow!("Falha ao encriptar groq_api_key: {e}"))?;
+    storable.openrouter_api_key = crate::crypto::encrypt_string(&settings.openrouter_api_key)
+        .map_err(|e| anyhow::anyhow!("Falha ao encriptar openrouter_api_key: {e}"))?;
+    storable.google_cloud_api_key = crate::crypto::encrypt_string(&settings.google_cloud_api_key)
+        .map_err(|e| anyhow::anyhow!("Falha ao encriptar google_cloud_api_key: {e}"))?;
+    storable.jgrc_session_cookie = crate::crypto::encrypt_string(&settings.jgrc_session_cookie)
+        .map_err(|e| anyhow::anyhow!("Falha ao encriptar jgrc_session_cookie: {e}"))?;
+
+    let json = serde_json::to_string_pretty(&storable)
         .context("Falha ao serializar configurações")?;
     fs::write(&path, json).context("Falha ao salvar configurações")?;
     log::info!("Configurações salvas");
     Ok(())
+}
+
+#[cfg(test)]
+#[cfg(windows)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_save_load_roundtrip_encrypts_sensitive_fields() {
+        // Save settings with a known API key
+        let mut settings = AppSettings::with_defaults();
+        settings.openai_api_key = "sk-roundtrip-test-key".to_string();
+        settings.groq_api_key = "gsk-roundtrip-groq".to_string();
+
+        save_settings(&settings).expect("save should succeed");
+
+        // The raw JSON on disk must NOT contain the plain-text key
+        let path = settings_file_path().unwrap();
+        let raw_json = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !raw_json.contains("sk-roundtrip-test-key"),
+            "plain openai_api_key must not appear in settings.json"
+        );
+        assert!(
+            !raw_json.contains("gsk-roundtrip-groq"),
+            "plain groq_api_key must not appear in settings.json"
+        );
+
+        // load_settings must decrypt back to the original values
+        let loaded = load_settings().expect("load should succeed");
+        assert_eq!(loaded.openai_api_key, "sk-roundtrip-test-key");
+        assert_eq!(loaded.groq_api_key, "gsk-roundtrip-groq");
+
+        // Clean up: restore empty settings
+        save_settings(&AppSettings::with_defaults()).unwrap();
+    }
+
+    #[test]
+    fn test_plaintext_keys_in_old_settings_return_empty_on_load() {
+        // Simulate a pre-encryption settings.json by writing plain-text JSON directly
+        let path = settings_file_path().unwrap();
+        let old = AppSettings::with_defaults();
+        // Get a clean base JSON then patch in a plain-text key before writing
+        let mut json_value: serde_json::Value =
+            serde_json::to_value(&old).unwrap();
+        json_value["openai_api_key"] = serde_json::json!("sk-old-plain-text-key");
+        std::fs::write(&path, serde_json::to_string_pretty(&json_value).unwrap()).unwrap();
+
+        let loaded = load_settings().expect("load should not fail");
+        assert_eq!(
+            loaded.openai_api_key, "",
+            "old plain-text key must be reset to empty string"
+        );
+
+        // Clean up
+        save_settings(&AppSettings::with_defaults()).unwrap();
+    }
 }
