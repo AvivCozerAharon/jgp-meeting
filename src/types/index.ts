@@ -50,12 +50,12 @@ export const TAG_COLORS = [
   "#6b7280", // Cinza
 ] as const;
 
-// ─── Feature 10: Diarização ───────────────────────────────────────────────────
+// ─── TranscriptSegment ────────────────────────────────────────────────────────
 
-export interface SpeakerSegment {
-  speaker: string;
-  text: string;
-  index: number;
+export interface TranscriptSegment {
+  source: "mic" | "system"
+  timestamp_ms: number
+  text: string
 }
 
 // ─── Resumo ───────────────────────────────────────────────────────────────────
@@ -78,10 +78,12 @@ export interface Meeting {
   summary: MeetingSummary | null;
   /** Feature 8 */
   meeting_type?: MeetingType | null;
-  /** Feature 10 */
-  speakers?: SpeakerSegment[] | null;
+  /** Segmentos de fala com fonte e timestamp */
+  segments?: TranscriptSegment[] | null;
   /** ID do evento no JGRC após exportação */
   jgrc_event_id?: string | null;
+  /** URL completa do evento no JGRC */
+  jgrc_event_url?: string | null;
   /** Tags associadas à reunião (IDs) */
   tags?: string[];
 }
@@ -105,10 +107,6 @@ export interface AppSettings {
   silence_threshold: number;
   /** Feature 5: captura microfone */
   capture_microphone: boolean;
-  /** Feature 7: whisper local */
-  use_local_whisper: boolean;
-  local_whisper_exe: string;
-  local_whisper_model: string;
   /** Feature 8: tipo padrão */
   default_meeting_type: MeetingType;
   /** Feature 13: atalho global (ex: "ctrl+shift+r") */
@@ -119,8 +117,6 @@ export interface AppSettings {
   pause_hotkey: string;
   /** Feature 15: gerar resumo automaticamente ao parar */
   auto_summary: boolean;
-  /** Download de modelo Whisper: diretório dos modelos */
-  local_models_dir: string;
   /** Microfone selecionado (ID WASAPI). Vazio = padrão do sistema */
   selected_microphone: string;
   /** AGC: normalização automática de volume do mic */
@@ -129,14 +125,17 @@ export interface AppSettings {
   mic_gain_max: number;
   /** Threshold de silêncio separado para o microfone */
   mic_silence_threshold: number;
-  /** Duração do chunk de áudio do microfone (segundos) */
-  mic_chunk_duration_secs: number;
+  /** Noise gate adaptativo: múltiplo do baseline RMS (0 = desativado) */
+  mic_noise_gate_ratio: number;
+  /** Hold time do noise gate em segundos (evita corte no final das palavras) */
+  mic_noise_gate_hold_secs: number;
   /** AGC: normalização automática de volume do áudio do sistema (loopback) */
   system_auto_gain: boolean;
   /** Fator de ganho máximo do sistema quando AGC ativo (ex: 3.0) */
   system_gain_max: number;
   /** Prompt de contexto para o Whisper (melhora transcrição) */
   whisper_prompt: string;
+  whisper_glossary: string;
   /** Tema da interface: "dark", "light" ou "system" */
   theme: 'dark' | 'light' | 'system';
   // ─── Integração JGRC ──────────────────────────────────────────────────────
@@ -146,6 +145,8 @@ export interface AppSettings {
   jgrc_responsible_id: string;
   /** Cookie de sessão do JGRC capturado via WebView */
   jgrc_session_cookie: string;
+  /** Wizard de configuração inicial foi concluído */
+  setup_done: boolean;
 }
 
 /** Dispositivo de áudio de entrada disponível no sistema */

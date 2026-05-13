@@ -2,7 +2,7 @@
 // Modal/painel de configurações do aplicativo.
 // Permite configurar a chave da API OpenAI, idioma e outros parâmetros.
 
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect } from "react";
 import clsx from "clsx";
 import {
   Key,
@@ -17,11 +17,8 @@ import {
   Mic,
   Volume2,
   LayoutGrid,
-  FolderOpen,
   Keyboard,
   Sparkles,
-  Download,
-  HardDrive,
   MessageSquare,
   Link,
   Sun,
@@ -29,9 +26,9 @@ import {
   Monitor,
   LogIn,
   Unplug,
+  BookOpen,
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import type { AppSettings, AudioDevice, MeetingType } from "@/types";
 import { useTheme } from "@/hooks/useTheme";
 import type { Theme } from "@/hooks/useTheme";
@@ -54,7 +51,6 @@ const SUPPORTED_MODELS = [
 const TRANSCRIPTION_PROVIDERS = [
   { value: "openai", label: "OpenAI Whisper" },
   { value: "groq",   label: "Groq (rápido)" },
-  { value: "local",  label: "Local (offline)" },
 ];
 
 const SUMMARY_PROVIDERS = [
@@ -70,6 +66,29 @@ const OPENROUTER_MODEL_SUGGESTIONS = [
   "meta-llama/llama-3.1-8b-instruct:free",
   "google/gemini-flash-1.5",
 ];
+
+const Tooltip: React.FC<{ content: string }> = ({ content }) => {
+  const [visible, setVisible] = useState(false);
+  return (
+    <span className="relative inline-flex items-center">
+      <button
+        type="button"
+        onMouseEnter={() => setVisible(true)}
+        onMouseLeave={() => setVisible(false)}
+        onClick={() => setVisible(v => !v)}
+        className="w-4 h-4 rounded-full bg-surface-200 dark:bg-surface-700 text-surface-500 dark:text-surface-400 text-[10px] font-bold flex items-center justify-center hover:bg-surface-300 dark:hover:bg-surface-600 transition-colors flex-shrink-0"
+        aria-label="Mais informações"
+      >
+        i
+      </button>
+      {visible && (
+        <span className="absolute left-6 top-0 z-50 w-64 p-2.5 text-xs text-surface-600 dark:text-surface-300 bg-white dark:bg-surface-800 border border-surface-200 dark:border-surface-700 rounded-xl shadow-lg leading-relaxed">
+          {content}
+        </span>
+      )}
+    </span>
+  );
+};
 
 const SUPPORTED_LANGUAGES = [
   { value: "pt", label: "Português (pt)" },
@@ -111,29 +130,28 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ className, activeT
     summary_provider: "openai",
     silence_threshold: 0.005,
     capture_microphone: true,
-    use_local_whisper: false,
-    local_whisper_exe: "",
-    local_whisper_model: "base",
     default_meeting_type: "general",
     global_hotkey: "ctrl+shift+r",
     mute_mic_hotkey: "ctrl+shift+m",
     pause_hotkey: "ctrl+shift+p",
     auto_summary: false,
-    local_models_dir: "",
     selected_microphone: "",
     mic_auto_gain: true,
     mic_gain_max: 4,
     mic_silence_threshold: 0.003,
-    mic_chunk_duration_secs: 5,
+    mic_noise_gate_ratio: 3,
+    mic_noise_gate_hold_secs: 0.4,
     system_auto_gain: true,
     system_gain_max: 3,
     whisper_prompt: "",
+    whisper_glossary: "",
     jgrc_url: "",
     jgrc_token: "",
     jgrc_event_type_id: "",
     jgrc_responsible_id: "",
     jgrc_session_cookie: "",
     theme: "dark",
+    setup_done: false,
   });
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
@@ -381,30 +399,76 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ className, activeT
               </div>
             </div>
 
-            {/* Intervalo de transcrição do mic */}
+            {/* Noise gate adaptativo */}
             <div>
-              <p className="text-xs font-medium text-surface-700 dark:text-surface-300 mb-1">
-                Intervalo do mic
+              <div className="flex items-center justify-between mb-2">
+                <p className="text-xs font-medium text-surface-700 dark:text-surface-300">
+                  Noise gate adaptativo
+                </p>
+                <div className="flex gap-1">
+                  {[
+                    { label: "Silenciosa", ratio: 0, hold: 0.3 },
+                    { label: "Reunião", ratio: 3, hold: 0.4 },
+                    { label: "Auditório", ratio: 6, hold: 0.6 },
+                  ].map((preset) => (
+                    <button
+                      key={preset.label}
+                      type="button"
+                      onClick={() => {
+                        updateSetting("mic_noise_gate_ratio", preset.ratio);
+                        updateSetting("mic_noise_gate_hold_secs", preset.hold);
+                      }}
+                      className={clsx(
+                        "px-2 py-0.5 rounded text-[10px] font-medium border transition-colors",
+                        settings.mic_noise_gate_ratio === preset.ratio
+                          ? "bg-emerald-500 text-white border-emerald-500"
+                          : "border-surface-200 dark:border-surface-600 text-surface-500 dark:text-surface-400 hover:border-emerald-400 dark:hover:border-emerald-500"
+                      )}
+                    >
+                      {preset.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <p className="text-[10px] text-surface-400 dark:text-surface-500 mb-2">
+                {settings.mic_noise_gate_ratio === 0
+                  ? "Desativado — captura todo o som acima do threshold base"
+                  : `Filtro: ${settings.mic_noise_gate_ratio?.toFixed(1)}× baseline · hold ${settings.mic_noise_gate_hold_secs?.toFixed(1)}s`}
               </p>
-              <select
-                value={settings.mic_chunk_duration_secs ?? 5}
-                onChange={(e) => updateSetting("mic_chunk_duration_secs", Number(e.target.value))}
-                className={clsx(
-                  "w-full px-3 py-1.5 text-xs rounded-lg border",
-                  "border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-800/60 text-surface-800 dark:text-surface-200",
-                  "focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent",
-                  "transition-all appearance-none cursor-pointer"
-                )}
-              >
-                <option value={3}>3 segundos (mais rápido)</option>
-                <option value={5}>5 segundos (recomendado)</option>
-                <option value={8}>8 segundos</option>
-                <option value={10}>10 segundos (igual ao sistema)</option>
-              </select>
-              <p className="text-[10px] text-surface-400 dark:text-surface-500 mt-0.5">
-                Chunks menores = menos ruído por envio = transcrição mais precisa
-              </p>
+              {(settings.mic_noise_gate_ratio ?? 0) > 0 && (
+                <>
+                  <p className="text-[10px] text-surface-500 dark:text-surface-400 mb-1">Intensidade do filtro</p>
+                  <input
+                    type="range"
+                    min={1.5}
+                    max={10}
+                    step={0.5}
+                    value={settings.mic_noise_gate_ratio ?? 3}
+                    onChange={(e) => updateSetting("mic_noise_gate_ratio", parseFloat(e.target.value))}
+                    className="w-full accent-emerald-500"
+                  />
+                  <div className="flex justify-between text-[10px] text-surface-400 dark:text-surface-500 mt-0.5 mb-2">
+                    <span>Sutil (1.5×)</span>
+                    <span>Agressivo (10×)</span>
+                  </div>
+                  <p className="text-[10px] text-surface-500 dark:text-surface-400 mb-1">Hold time após fala</p>
+                  <input
+                    type="range"
+                    min={0.1}
+                    max={1.5}
+                    step={0.1}
+                    value={settings.mic_noise_gate_hold_secs ?? 0.4}
+                    onChange={(e) => updateSetting("mic_noise_gate_hold_secs", parseFloat(e.target.value))}
+                    className="w-full accent-emerald-500"
+                  />
+                  <div className="flex justify-between text-[10px] text-surface-400 dark:text-surface-500 mt-0.5">
+                    <span>0.1s (corte rápido)</span>
+                    <span>1.5s (suave)</span>
+                  </div>
+                </>
+              )}
             </div>
+
           </div>
         )}
       </SettingSection>
@@ -420,6 +484,32 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ className, activeT
           onChange={(e) => updateSetting("whisper_prompt", e.target.value)}
           rows={2}
           placeholder="Ex: Reunião de investimentos da JGP. Participantes: André, Marcelo, Guilherme. Termos: CDI, FIC FIM, cota, benchmark."
+          className={clsx(
+            "w-full px-3 py-2 text-sm rounded-xl border resize-none",
+            "border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-800/60 text-surface-800 dark:text-surface-200",
+            "focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent",
+            "placeholder:text-surface-400 dark:placeholder:text-surface-600",
+            "transition-all"
+          )}
+        />
+      </SettingSection>
+
+      {/* Glossário de Termos */}
+      <SettingSection
+        icon={<BookOpen className="w-4 h-4 text-surface-500" />}
+        title={
+          <div className="flex items-center gap-1.5">
+            <span>Glossário de Termos</span>
+            <Tooltip content="Liste termos, nomes ou siglas que devem ser reconhecidos corretamente, separados por vírgula. Ex: JGP, Vorcaro, CDI, gestora de fundos. Esses termos são enviados como contexto ao Whisper antes de cada chunk de áudio." />
+          </div>
+        }
+        description=""
+      >
+        <textarea
+          value={settings.whisper_glossary ?? ""}
+          onChange={(e) => updateSetting("whisper_glossary", e.target.value)}
+          rows={2}
+          placeholder="Ex: JGP, Vorcaro, CDI, gestora de fundos, benchmark"
           className={clsx(
             "w-full px-3 py-2 text-sm rounded-xl border resize-none",
             "border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-800/60 text-surface-800 dark:text-surface-200",
@@ -585,50 +675,6 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ className, activeT
             </div>
           )}
 
-          {(settings.transcription_provider ?? "openai") === "local" && (
-            <div className="space-y-3">
-              <div className="flex items-start gap-2 p-2 bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/20 rounded-lg text-xs text-amber-800 dark:text-amber-300">
-                <span className="mt-0.5">⚠️</span>
-                <span>Baixe o <strong>whisper-cli.exe</strong> em github.com/ggerganov/whisper.cpp/releases.</span>
-              </div>
-              <div>
-                <label className="text-xs font-medium text-surface-600 dark:text-surface-400 mb-1 block flex items-center gap-1.5">
-                  <FolderOpen className="w-3.5 h-3.5" />
-                  Executável whisper-cli.exe
-                </label>
-                <input
-                  type="text"
-                  value={settings.local_whisper_exe ?? ""}
-                  onChange={(e) => updateSetting("local_whisper_exe", e.target.value)}
-                  placeholder="C:\whisper\whisper-cli.exe"
-                  className={clsx(
-                    "w-full px-3 py-2 text-sm rounded-xl border font-mono",
-                    "border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-800/60 text-surface-800 dark:text-surface-200",
-                    "focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent",
-                    "placeholder:text-surface-300 dark:placeholder:text-surface-600"
-                  )}
-                />
-              </div>
-              <div>
-                <label className="text-xs font-medium text-surface-600 dark:text-surface-400 mb-1 block flex items-center gap-1.5">
-                  <HardDrive className="w-3.5 h-3.5" />
-                  Caminho do modelo (.bin)
-                </label>
-                <input
-                  type="text"
-                  value={settings.local_whisper_model ?? "base"}
-                  onChange={(e) => updateSetting("local_whisper_model", e.target.value)}
-                  placeholder="base  ou  C:\...\ggml-base.bin"
-                  className={clsx(
-                    "w-full px-3 py-2 text-sm rounded-xl border font-mono",
-                    "border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-800/60 text-surface-800 dark:text-surface-200",
-                    "focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent",
-                    "placeholder:text-surface-300 dark:placeholder:text-surface-600"
-                  )}
-                />
-              </div>
-            </div>
-          )}
         </div>
 
         {/* Idioma + Chunk duration */}
@@ -810,11 +856,6 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ className, activeT
         </div>
       </SettingSection>
 
-      {/* Download de modelo Whisper — só quando provider local */}
-      {(settings.transcription_provider ?? "openai") === "local" && (
-        <WhisperModelDownloader onModelDownloaded={(path) => updateSetting("local_whisper_model", path)} />
-      )}
-
       </>)}
 
       {activeTab === "jgrc" && (<>
@@ -947,7 +988,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ className, activeT
 
 interface SettingSectionProps {
   icon: React.ReactNode;
-  title: string;
+  title: string | React.ReactNode;
   description?: string;
   children: React.ReactNode;
 }
@@ -1106,162 +1147,3 @@ const JgrcConnectionSection: React.FC<JgrcConnectionSectionProps> = ({
   );
 };
 
-// ─── Componente de download de modelos Whisper ────────────────────────────────
-
-const WHISPER_MODELS = [
-  { value: "tiny",      label: "Tiny (~75 MB)",   desc: "Mais rápido, menos preciso" },
-  { value: "base",      label: "Base (~142 MB)",   desc: "Bom equilíbrio (recomendado)" },
-  { value: "small",     label: "Small (~466 MB)",  desc: "Mais preciso" },
-  { value: "medium",    label: "Medium (~1.5 GB)", desc: "Alta precisão" },
-  { value: "large-v3",  label: "Large v3 (~3 GB)", desc: "Melhor qualidade" },
-];
-
-interface DownloadProgressState {
-  downloaded: number;
-  total: number;
-}
-
-const WhisperModelDownloader: React.FC<{ onModelDownloaded?: (path: string) => void }> = ({ onModelDownloaded }) => {
-  const [selectedModel, setSelectedModel] = useState("base");
-  const [downloadedModels, setDownloadedModels] = useState<string[]>([]);
-  const [downloading, setDownloading] = useState(false);
-  const [progress, setProgress] = useState<DownloadProgressState | null>(null);
-  const [downloadError, setDownloadError] = useState<string | null>(null);
-  const [downloadedPath, setDownloadedPath] = useState<string | null>(null);
-  const unlistenRef = useRef<(() => void) | null>(null);
-
-  useEffect(() => {
-    invoke<string[]>("list_downloaded_whisper_models")
-      .then(setDownloadedModels)
-      .catch(console.error);
-  }, []);
-
-  const handleDownload = async () => {
-    setDownloading(true);
-    setProgress(null);
-    setDownloadError(null);
-    setDownloadedPath(null);
-
-    // Escuta progresso
-    const unlisten = await listen<{ model: string; downloaded: number; total: number }>(
-      "whisper-download-progress",
-      (e) => setProgress({ downloaded: e.payload.downloaded, total: e.payload.total })
-    );
-    unlistenRef.current = unlisten;
-
-    try {
-      const path = await invoke<string>("download_whisper_model", { model: selectedModel });
-      setDownloadedPath(path);
-      setDownloadedModels((prev) => [...new Set([...prev, selectedModel])]);
-      // Atualiza local_whisper_model com o caminho completo do modelo baixado
-      onModelDownloaded?.(path);
-    } catch (err) {
-      setDownloadError(String(err));
-    } finally {
-      setDownloading(false);
-      unlistenRef.current?.();
-    }
-  };
-
-  const progressPct =
-    progress && progress.total > 0
-      ? Math.round((progress.downloaded / progress.total) * 100)
-      : 0;
-
-  const formatBytes = (bytes: number) => {
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  };
-
-  return (
-    <SettingSection
-      icon={<HardDrive className="w-4 h-4 text-surface-500" />}
-      title="Baixar Modelo Whisper Local"
-      description="Baixa modelos ggml do whisper.cpp para uso offline (sem API OpenAI). O arquivo é salvo no diretório de dados do app."
-    >
-      <div className="space-y-3">
-        <div className="flex gap-2">
-          <select
-            value={selectedModel}
-            onChange={(e) => setSelectedModel(e.target.value)}
-            disabled={downloading}
-            className={clsx(
-              "flex-1 px-3 py-2 text-sm rounded-xl border",
-              "border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-800/60 text-surface-800 dark:text-surface-200",
-              "focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent",
-              "appearance-none cursor-pointer disabled:opacity-60"
-            )}
-          >
-            {WHISPER_MODELS.map((m) => (
-              <option key={m.value} value={m.value}>
-                {m.label} — {m.desc}
-                {downloadedModels.includes(m.value) ? " ✓" : ""}
-              </option>
-            ))}
-          </select>
-
-          <button
-            onClick={handleDownload}
-            disabled={downloading || downloadedModels.includes(selectedModel)}
-            className={clsx(
-              "flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold",
-              "bg-primary-500 text-white shadow-sm",
-              "hover:bg-primary-600 transition-all duration-150",
-              "focus:outline-none focus:ring-2 focus:ring-primary-500",
-              "disabled:opacity-60 disabled:cursor-not-allowed"
-            )}
-          >
-            {downloading ? (
-              <Spinner size="xs" color="white" />
-            ) : downloadedModels.includes(selectedModel) ? (
-              <CheckCircle2 className="w-4 h-4" />
-            ) : (
-              <Download className="w-4 h-4" />
-            )}
-            {downloading
-              ? `${progressPct}%`
-              : downloadedModels.includes(selectedModel)
-              ? "Baixado"
-              : "Baixar"}
-          </button>
-        </div>
-
-        {/* Barra de progresso */}
-        {downloading && progress && (
-          <div className="space-y-1">
-            <div className="w-full bg-surface-100 dark:bg-surface-700 rounded-full h-2 overflow-hidden">
-              <div
-                className="h-2 bg-primary-500 rounded-full transition-all duration-300"
-                style={{ width: `${progressPct}%` }}
-              />
-            </div>
-            <p className="text-xs text-surface-500">
-              {formatBytes(progress.downloaded)} / {progress.total > 0 ? formatBytes(progress.total) : "?"}
-              {" "}— {progressPct}%
-            </p>
-          </div>
-        )}
-
-        {downloadError && (
-          <div className="flex items-start gap-1.5 p-2 bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/20 rounded-lg">
-            <AlertCircle className="w-3.5 h-3.5 text-red-500 mt-0.5 flex-shrink-0" />
-            <p className="text-xs text-red-700 dark:text-red-400">{downloadError}</p>
-          </div>
-        )}
-
-        {downloadedPath && !downloading && (
-          <div className="flex items-start gap-1.5 p-2 bg-primary-50 dark:bg-primary-500/10 border border-primary-200 dark:border-primary-500/20 rounded-lg">
-            <CheckCircle2 className="w-3.5 h-3.5 text-primary-500 mt-0.5 flex-shrink-0" />
-            <p className="text-xs text-primary-700 dark:text-primary-400 font-mono break-all">{downloadedPath}</p>
-          </div>
-        )}
-
-        {downloadedModels.length > 0 && (
-          <p className="text-xs text-surface-400">
-            Baixados: {downloadedModels.join(", ")}
-          </p>
-        )}
-      </div>
-    </SettingSection>
-  );
-};
