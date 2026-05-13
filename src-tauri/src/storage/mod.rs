@@ -7,7 +7,7 @@ use std::fs;
 use std::path::PathBuf;
 use uuid::Uuid;
 
-use crate::ai::{MeetingSummary, SpeakerSegment};
+use crate::ai::MeetingSummary;
 
 // ─── MeetingType (Feature 8) ──────────────────────────────────────────────────
 
@@ -27,23 +27,23 @@ pub enum MeetingType {
 impl MeetingType {
     pub fn label(&self) -> &'static str {
         match self {
-            Self::General      => "Reunião Geral",
-            Self::Standup      => "Daily Standup",
-            Self::OneOnOne     => "1:1",
+            Self::General => "Reunião Geral",
+            Self::Standup => "Daily Standup",
+            Self::OneOnOne => "1:1",
             Self::Retrospective => "Retrospectiva",
-            Self::Commercial   => "Comercial",
-            Self::Interview    => "Entrevista",
+            Self::Commercial => "Comercial",
+            Self::Interview => "Entrevista",
         }
     }
 
     pub fn icon(&self) -> &'static str {
         match self {
-            Self::General      => "🏢",
-            Self::Standup      => "⚡",
-            Self::OneOnOne     => "👥",
+            Self::General => "🏢",
+            Self::Standup => "⚡",
+            Self::OneOnOne => "👥",
             Self::Retrospective => "🔄",
-            Self::Commercial   => "💼",
-            Self::Interview    => "🎯",
+            Self::Commercial => "💼",
+            Self::Interview => "🎯",
         }
     }
 }
@@ -56,6 +56,18 @@ pub struct Tag {
     pub name: String,
     /// One of the 10 fixed hex color values from the frontend palette
     pub color: String,
+}
+
+// ─── TranscriptSegment ────────────────────────────────────────────────────────
+
+/// Um segmento de fala da transcrição, com fonte e timestamp.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct TranscriptSegment {
+    /// "mic" ou "system"
+    pub source: String,
+    /// Milissegundos desde o início da gravação (start do chunk, não o fim)
+    pub timestamp_ms: u64,
+    pub text: String,
 }
 
 // ─── Meeting ──────────────────────────────────────────────────────────────────
@@ -71,11 +83,15 @@ pub struct Meeting {
     pub summary: Option<MeetingSummary>,
     /// Feature 8: tipo de reunião para template de IA
     pub meeting_type: Option<MeetingType>,
-    /// Feature 10: segmentos de fala identificados pela IA
-    pub speakers: Option<Vec<SpeakerSegment>>,
+    /// Segmentos de fala com fonte e timestamp (None em reuniões antigas)
+    #[serde(default)]
+    pub segments: Option<Vec<TranscriptSegment>>,
     /// ID do evento no JGRC após exportação (None = ainda não exportado)
     #[serde(default)]
     pub jgrc_event_id: Option<String>,
+    /// URL completa do evento no JGRC (ex: https://jgrc.jgp.com.br/events/123)
+    #[serde(default)]
+    pub jgrc_event_url: Option<String>,
     /// Tags aplicadas à reunião (lista de IDs de Tag)
     #[serde(default)]
     pub tags: Vec<String>,
@@ -92,8 +108,9 @@ impl Meeting {
             transcript: String::new(),
             summary: None,
             meeting_type: None,
-            speakers: None,
+            segments: None,
             jgrc_event_id: None,
+            jgrc_event_url: None,
             tags: Vec::new(),
         }
     }
@@ -110,6 +127,7 @@ impl Default for Meeting {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AppSettings {
     pub openai_api_key: String,
+    #[serde(default = "default_language")]
     pub transcription_language: String,
     pub summary_model: String,
     pub chunk_duration_secs: f32,
@@ -143,11 +161,6 @@ pub struct AppSettings {
     #[serde(default = "default_capture_mic")]
     pub capture_microphone: bool,
 
-    /// Feature 7: usa whisper.cpp local em vez da API OpenAI (legado — usar transcription_provider="local")
-    pub use_local_whisper: bool,
-    pub local_whisper_exe: String,   // caminho para whisper-cli.exe
-    pub local_whisper_model: String, // ex: "base", "small", ou path do ggml
-
     /// Feature 8: tipo de reunião padrão
     pub default_meeting_type: MeetingType,
 
@@ -166,10 +179,6 @@ pub struct AppSettings {
     /// Feature 15: gerar resumo automaticamente ao parar a gravação
     #[serde(default)]
     pub auto_summary: bool,
-
-    /// Download de modelo Whisper: diretório onde os modelos ggml são salvos
-    #[serde(default)]
-    pub local_models_dir: String,
 
     /// Microfone selecionado pelo usuário (ID WASAPI).
     /// String vazia = microfone padrão do sistema.
@@ -192,11 +201,16 @@ pub struct AppSettings {
     #[serde(default = "default_mic_silence_threshold")]
     pub mic_silence_threshold: f32,
 
-    /// Duração do chunk de áudio do microfone (em segundos).
-    /// Default 5.0 — menor que o sistema (10s) para chunks mais limpos e
-    /// menos ruído por envio ao Whisper.
-    #[serde(default = "default_mic_chunk_duration")]
-    pub mic_chunk_duration_secs: f32,
+    /// Noise gate adaptativo: multiplica o baseline de ruído ambiente por este fator
+    /// para definir o threshold dinâmico. 0.0 = desativado (usa mic_silence_threshold fixo).
+    /// Ex: 3.0 = só passa som 3× acima do ruído ambiente da sala.
+    #[serde(default = "default_noise_gate_ratio")]
+    pub mic_noise_gate_ratio: f32,
+
+    /// Segundos de hold após detectar voz: continua enviando áudio mesmo abaixo do
+    /// threshold por este tempo, evitando cortar fim de palavras/frases.
+    #[serde(default = "default_noise_gate_hold")]
+    pub mic_noise_gate_hold_secs: f32,
 
     /// Ganho automático (AGC) para o áudio do sistema (loopback).
     /// Default true — áudio do Teams/Zoom via loopback pode ser muito baixo dependendo
@@ -213,6 +227,11 @@ pub struct AppSettings {
     /// Ex: "Reunião de investimentos na JGP, gestora de fundos."
     #[serde(default)]
     pub whisper_prompt: String,
+
+    /// Termos, nomes próprios ou siglas enviados ao Whisper como vocabulário de contexto.
+    /// Separados por vírgula ou nova linha. Ex: "JGP, Vorcaro, CDI"
+    #[serde(default)]
+    pub whisper_glossary: String,
 
     // ─── Integração JGRC ──────────────────────────────────────────────────────
     /// URL base do JGRC (ex: "http://localhost:3000")
@@ -240,6 +259,14 @@ pub struct AppSettings {
     pub jgrc_event_type_id: String,
     #[serde(default)]
     pub jgrc_responsible_id: String,
+
+    /// Wizard de configuração inicial foi concluído
+    #[serde(default)]
+    pub setup_done: bool,
+
+    /// Empresa associada à reunião: "jgp" | "regia" | None
+    #[serde(default)]
+    pub company: Option<String>,
 }
 
 fn default_hotkey() -> String {
@@ -279,15 +306,23 @@ fn default_system_gain() -> f32 {
 }
 
 fn default_mic_silence_threshold() -> f32 {
-    0.003
+    0.01
 }
 
-fn default_mic_chunk_duration() -> f32 {
-    5.0
+fn default_noise_gate_ratio() -> f32 {
+    3.0
+}
+
+fn default_noise_gate_hold() -> f32 {
+    0.4
 }
 
 fn default_theme() -> String {
     "dark".to_string()
+}
+
+fn default_language() -> String {
+    "pt".to_string()
 }
 
 impl Default for AppSettings {
@@ -310,26 +345,25 @@ impl AppSettings {
             summary_provider: "openai".to_string(),
             silence_threshold: 0.002,
             capture_microphone: true,
-            use_local_whisper: false,
-            local_whisper_exe: String::new(),
-            local_whisper_model: "base".to_string(),
             default_meeting_type: MeetingType::General,
             global_hotkey: "ctrl+shift+r".to_string(),
             mute_mic_hotkey: "ctrl+shift+m".to_string(),
             pause_hotkey: "ctrl+shift+p".to_string(),
             auto_summary: false,
-            local_models_dir: String::new(),
             selected_microphone: String::new(),
             mic_auto_gain: true,
             mic_gain_max: 4.0,
-            mic_silence_threshold: 0.003,
-            mic_chunk_duration_secs: 5.0,
+            mic_silence_threshold: 0.01,
+            mic_noise_gate_ratio: 3.0,
+            mic_noise_gate_hold_secs: 0.4,
             system_auto_gain: true,
             system_gain_max: 3.0,
             whisper_prompt: "JGP, gestora, fundo, renda fixa, ações, multimercado, \
                 FII, NTN-B, IPCA, CDI, benchmark, drawdown, volatilidade, cotista, \
                 mandato, alocação, hedge, debêntures, cupom, duration, spread, \
-                yield, carry, valuation, follow-on, IPO, CVM, B3".to_string(),
+                yield, carry, valuation, follow-on, IPO, CVM, B3"
+                .to_string(),
+            whisper_glossary: String::new(),
             theme: "dark".to_string(),
             jgrc_url: String::new(),
             jgrc_email: String::new(),
@@ -338,6 +372,8 @@ impl AppSettings {
             jgrc_token: String::new(),
             jgrc_event_type_id: String::new(),
             jgrc_responsible_id: String::new(),
+            setup_done: false,
+            company: None,
         }
     }
 }
@@ -345,18 +381,11 @@ impl AppSettings {
 // ─── Helpers internos ─────────────────────────────────────────────────────────
 
 pub fn app_data_dir() -> Result<PathBuf> {
-    let base = dirs::data_dir()
-        .context("Não foi possível determinar o diretório de dados do usuário")?;
+    let base =
+        dirs::data_dir().context("Não foi possível determinar o diretório de dados do usuário")?;
     let app_dir = base.join("jgp-meeting");
     fs::create_dir_all(&app_dir).context("Falha ao criar diretório de dados")?;
     Ok(app_dir)
-}
-
-/// Retorna (e cria) o diretório onde os modelos Whisper ggml são baixados.
-pub fn models_dir() -> Result<PathBuf> {
-    let dir = app_data_dir()?.join("models");
-    fs::create_dir_all(&dir).context("Falha ao criar diretório de modelos")?;
-    Ok(dir)
 }
 
 fn meeting_file_path(id: &str) -> Result<PathBuf> {
@@ -394,18 +423,18 @@ pub fn save_tags(tags: &[Tag]) -> Result<()> {
 
 pub fn save_meeting(meeting: &Meeting) -> Result<()> {
     let path = meeting_file_path(&meeting.id)?;
-    let json = serde_json::to_string_pretty(meeting)
-        .context("Falha ao serializar reunião")?;
-    fs::write(&path, &json)
-        .context(format!("Falha ao gravar {}", path.display()))?;
+    let json = serde_json::to_string_pretty(meeting).context("Falha ao serializar reunião")?;
+    fs::write(&path, &json).context(format!("Falha ao gravar {}", path.display()))?;
     log::info!("Reunião {} salva em {}", meeting.id, path.display());
     Ok(())
 }
 
 pub fn load_meeting(id: &str) -> Result<Meeting> {
     let path = meeting_file_path(id)?;
-    let json = fs::read_to_string(&path)
-        .context(format!("Arquivo de reunião não encontrado: {}", path.display()))?;
+    let json = fs::read_to_string(&path).context(format!(
+        "Arquivo de reunião não encontrado: {}",
+        path.display()
+    ))?;
     serde_json::from_str(&json).context("Falha ao deserializar reunião")
 }
 
@@ -435,8 +464,7 @@ pub fn list_meetings() -> Result<Vec<Meeting>> {
 pub fn delete_meeting(id: &str) -> Result<()> {
     let path = meeting_file_path(id)?;
     if path.exists() {
-        fs::remove_file(&path)
-            .context(format!("Falha ao remover {}", path.display()))?;
+        fs::remove_file(&path).context(format!("Falha ao remover {}", path.display()))?;
         log::info!("Reunião {id} removida");
     }
     Ok(())
@@ -456,8 +484,8 @@ pub fn load_settings() -> Result<AppSettings> {
 
     // Decrypt sensitive fields. On failure (e.g. old plain-text settings),
     // reset field to empty string so the user can re-enter the key.
-    settings.openai_api_key =
-        crate::crypto::decrypt_string(&settings.openai_api_key).unwrap_or_else(|e| {
+    settings.openai_api_key = crate::crypto::decrypt_string(&settings.openai_api_key)
+        .unwrap_or_else(|e| {
             log::warn!("openai_api_key decrypt failed (resetting to empty): {e}");
             String::new()
         });
@@ -466,18 +494,18 @@ pub fn load_settings() -> Result<AppSettings> {
             log::warn!("groq_api_key decrypt failed (resetting to empty): {e}");
             String::new()
         });
-    settings.openrouter_api_key =
-        crate::crypto::decrypt_string(&settings.openrouter_api_key).unwrap_or_else(|e| {
+    settings.openrouter_api_key = crate::crypto::decrypt_string(&settings.openrouter_api_key)
+        .unwrap_or_else(|e| {
             log::warn!("openrouter_api_key decrypt failed (resetting to empty): {e}");
             String::new()
         });
-    settings.google_cloud_api_key =
-        crate::crypto::decrypt_string(&settings.google_cloud_api_key).unwrap_or_else(|e| {
+    settings.google_cloud_api_key = crate::crypto::decrypt_string(&settings.google_cloud_api_key)
+        .unwrap_or_else(|e| {
             log::warn!("google_cloud_api_key decrypt failed (resetting to empty): {e}");
             String::new()
         });
-    settings.jgrc_session_cookie =
-        crate::crypto::decrypt_string(&settings.jgrc_session_cookie).unwrap_or_else(|e| {
+    settings.jgrc_session_cookie = crate::crypto::decrypt_string(&settings.jgrc_session_cookie)
+        .unwrap_or_else(|e| {
             log::warn!("jgrc_session_cookie decrypt failed (resetting to empty): {e}");
             String::new()
         });
@@ -497,13 +525,14 @@ pub fn save_settings(settings: &AppSettings) -> Result<()> {
         .map_err(|e| anyhow::anyhow!("Falha ao encriptar groq_api_key: {e}"))?;
     storable.openrouter_api_key = crate::crypto::encrypt_string(&settings.openrouter_api_key)
         .map_err(|e| anyhow::anyhow!("Falha ao encriptar openrouter_api_key: {e}"))?;
-    storable.google_cloud_api_key = crate::crypto::encrypt_string(&settings.google_cloud_api_key)
-        .map_err(|e| anyhow::anyhow!("Falha ao encriptar google_cloud_api_key: {e}"))?;
+    storable.google_cloud_api_key =
+        crate::crypto::encrypt_string(&settings.google_cloud_api_key)
+            .map_err(|e| anyhow::anyhow!("Falha ao encriptar google_cloud_api_key: {e}"))?;
     storable.jgrc_session_cookie = crate::crypto::encrypt_string(&settings.jgrc_session_cookie)
         .map_err(|e| anyhow::anyhow!("Falha ao encriptar jgrc_session_cookie: {e}"))?;
 
-    let json = serde_json::to_string_pretty(&storable)
-        .context("Falha ao serializar configurações")?;
+    let json =
+        serde_json::to_string_pretty(&storable).context("Falha ao serializar configurações")?;
     fs::write(&path, json).context("Falha ao salvar configurações")?;
     log::info!("Configurações salvas");
     Ok(())
@@ -557,8 +586,7 @@ mod tests {
         let path = settings_file_path().unwrap();
         let old = AppSettings::with_defaults();
         // Get a clean base JSON then patch in a plain-text key before writing
-        let mut json_value: serde_json::Value =
-            serde_json::to_value(&old).unwrap();
+        let mut json_value: serde_json::Value = serde_json::to_value(&old).unwrap();
         json_value["openai_api_key"] = serde_json::json!("sk-old-plain-text-key");
         std::fs::write(&path, serde_json::to_string_pretty(&json_value).unwrap()).unwrap();
 
