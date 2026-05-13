@@ -5,6 +5,7 @@ import { useEffect, useLayoutEffect, useState, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Mic, MicOff, Pause, Play, Square } from "lucide-react";
+import jgpLogo from "../assets/marca-jgp-white.png";
 
 function formatDuration(secs: number): string {
   const m = Math.floor(secs / 60).toString().padStart(2, "0");
@@ -50,22 +51,22 @@ const CtrlBtn: React.FC<CtrlBtnProps> = ({ onClick, title, active, danger, child
       WebkitAppRegion: "no-drag",
     } as React.CSSProperties}
     onMouseEnter={(e) => {
-      (e.currentTarget as HTMLButtonElement).style.background = danger
+      const el = e.currentTarget as HTMLButtonElement;
+      el.style.background = danger
         ? "rgba(239,68,68,0.28)"
         : active
         ? "rgba(239,68,68,0.35)"
         : "rgba(255,255,255,0.12)";
-      (e.currentTarget as HTMLButtonElement).style.color = danger
-        ? "#fca5a5"
-        : "rgba(255,255,255,0.9)";
+      el.style.color = danger ? "#fca5a5" : "rgba(255,255,255,0.9)";
     }}
     onMouseLeave={(e) => {
-      (e.currentTarget as HTMLButtonElement).style.background = active
+      const el = e.currentTarget as HTMLButtonElement;
+      el.style.background = active
         ? "rgba(239,68,68,0.22)"
         : danger
         ? "rgba(239,68,68,0.12)"
         : "rgba(255,255,255,0.06)";
-      (e.currentTarget as HTMLButtonElement).style.color = active
+      el.style.color = active
         ? "#fca5a5"
         : danger
         ? "rgba(239,68,68,0.85)"
@@ -74,6 +75,19 @@ const CtrlBtn: React.FC<CtrlBtnProps> = ({ onClick, title, active, danger, child
   >
     {children}
   </button>
+);
+
+// ── Separador vertical ────────────────────────────────────────────────────────
+
+const Sep: React.FC = () => (
+  <div
+    style={{
+      width: 1,
+      height: 20,
+      background: "rgba(255,255,255,0.10)",
+      flexShrink: 0,
+    }}
+  />
 );
 
 // ── Componente principal ──────────────────────────────────────────────────────
@@ -97,31 +111,33 @@ export const ComplianceOverlay = () => {
     return () => clearInterval(id);
   }, [isPaused]);
 
-  // Sincroniza estado inicial + poll de mute
+  // Sincroniza estado inicial + poll completo de status
   useEffect(() => {
-    invoke<{ mic_muted: boolean; is_paused: boolean; duration_secs: number }>(
-      "get_capture_status"
-    )
-      .then((s) => {
+    const sync = async () => {
+      try {
+        const s = await invoke<{
+          mic_muted: boolean;
+          is_paused: boolean;
+          duration_secs: number;
+          is_capturing: boolean;
+        }>("get_capture_status");
         setMicMuted(s.mic_muted);
         setIsPaused(s.is_paused);
-        setDuration(s.duration_secs);
-      })
-      .catch(() => {});
-
-    const poll = setInterval(async () => {
-      try {
-        const s = await invoke<{ mic_muted: boolean }>("get_capture_status");
-        setMicMuted(s.mic_muted);
+        setDuration((d) => (Math.abs(s.duration_secs - d) > 2 ? s.duration_secs : d));
+        if (!s.is_capturing) {
+          invoke("close_compliance_window").catch(() => {});
+        }
       } catch {}
-    }, 2000);
+    };
+
+    sync();
+    const poll = setInterval(sync, 2000);
     return () => clearInterval(poll);
   }, []);
 
   useEffect(() => {
     const unsubs = [
       listen<boolean>("capture-paused", (e) => setIsPaused(e.payload)),
-      // Fecha esta janela quando a gravação termina (via qualquer origem)
       listen<string>("recording-stopped", () => {
         invoke("close_compliance_window").catch(() => {});
       }),
@@ -140,10 +156,8 @@ export const ComplianceOverlay = () => {
   const handleStop = useCallback(async () => {
     try {
       await invoke("stop_capture");
-      // Janela fecha via evento "recording-stopped" emitido pelo backend
     } catch (e) {
       console.error("stop_capture falhou:", e);
-      // Fecha mesmo assim para não deixar janela órfã
       invoke("close_compliance_window").catch(() => {});
     }
   }, []);
@@ -155,13 +169,13 @@ export const ComplianceOverlay = () => {
     <div
       style={{
         margin: 10,
-        padding: "0 12px",
+        padding: "0 14px",
         height: 52,
-        borderRadius: 14,
+        borderRadius: 16,
         display: "flex",
         alignItems: "center",
-        gap: 10,
-        background: "rgba(11, 13, 20, 0.88)",
+        gap: 12,
+        background: "rgba(11, 13, 20, 0.90)",
         backdropFilter: "blur(24px) saturate(180%)",
         WebkitBackdropFilter: "blur(24px) saturate(180%)",
         border: "1px solid rgba(255,255,255,0.07)",
@@ -172,7 +186,22 @@ export const ComplianceOverlay = () => {
         cursor: "default",
       } as React.CSSProperties}
     >
-      {/* ── Badge REC / PAUSED ── */}
+      {/* ── Logo JGP ── */}
+      <img
+        src={jgpLogo}
+        alt="JGP"
+        style={{
+          height: 22,
+          width: "auto",
+          opacity: 0.85,
+          flexShrink: 0,
+          pointerEvents: "none",
+        }}
+      />
+
+      <Sep />
+
+      {/* ── Badge REC / PAUSADO ── */}
       <div
         style={{
           display: "flex",
@@ -185,7 +214,6 @@ export const ComplianceOverlay = () => {
           flexShrink: 0,
         }}
       >
-        {/* Dot animado */}
         {isPaused ? (
           <Pause size={10} color={accentColor} strokeWidth={2.5} />
         ) : (
@@ -240,15 +268,7 @@ export const ComplianceOverlay = () => {
         {formatDuration(duration)}
       </span>
 
-      {/* ── Separador ── */}
-      <div
-        style={{
-          width: 1,
-          height: 20,
-          background: "rgba(255,255,255,0.10)",
-          flexShrink: 0,
-        }}
-      />
+      <Sep />
 
       {/* ── Controles ── */}
       <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
