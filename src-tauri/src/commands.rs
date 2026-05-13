@@ -194,6 +194,7 @@ pub async fn start_capture(
     let groq_key         = settings.groq_api_key.clone();
     let language         = settings.transcription_language.clone();
     let whisper_prompt   = settings.whisper_prompt.clone();
+    let whisper_glossary = settings.whisper_glossary.clone();
     let app_clone        = app.clone();
     let recording_start  = recording_start;
 
@@ -222,6 +223,7 @@ pub async fn start_capture(
             api_key: &str,
             groq_key: &str,
             whisper_prompt: &str,
+            whisper_glossary: &str,
             app: &AppHandle,
         ) -> bool {
             let _ = app.emit("transcription-processing", true);
@@ -243,11 +245,28 @@ pub async fn start_capture(
                 let start = words.len().saturating_sub(50);
                 words[start..].join(" ")
             };
-            let effective_prompt: Option<String> = match (context_words.is_empty(), whisper_prompt.is_empty()) {
-                (true,  true)  => None,
-                (true,  false) => Some(whisper_prompt.to_string()),
-                (false, true)  => Some(context_words),
-                (false, false) => Some(format!("{} {}", context_words, whisper_prompt)),
+            let glossary_part: Option<String> = {
+                let terms: Vec<&str> = whisper_glossary
+                    .split([',', '\n'])
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                if terms.is_empty() { None } else { Some(terms.join(", ")) }
+            };
+
+            let effective_prompt: Option<String> = match (
+                glossary_part.as_deref(),
+                context_words.is_empty(),
+                whisper_prompt.is_empty(),
+            ) {
+                (None,    true,  true)  => None,
+                (None,    true,  false) => Some(whisper_prompt.to_string()),
+                (None,    false, true)  => Some(context_words),
+                (None,    false, false) => Some(format!("{} {}", context_words, whisper_prompt)),
+                (Some(g), true,  true)  => Some(g.to_string()),
+                (Some(g), true,  false) => Some(format!("{} {}", g, whisper_prompt)),
+                (Some(g), false, true)  => Some(format!("{} {}", g, context_words)),
+                (Some(g), false, false) => Some(format!("{} {} {}", g, context_words, whisper_prompt)),
             };
             let prompt_opt = effective_prompt.as_deref();
 
@@ -362,11 +381,12 @@ pub async fn start_capture(
                     let key2      = api_key.clone();
                     let groq2     = groq_key.clone();
                     let prompt2   = whisper_prompt.clone();
+                    let glossary2   = whisper_glossary.clone();
                     tokio::spawn(async move {
                         let _permit = permit; // released when task ends
                         process_chunk(
                             chunk, recording_start, chunk_recv_ms,
-                            &provider2, &lang2, &key2, &groq2, &prompt2, &app2,
+                            &provider2, &lang2, &key2, &groq2, &prompt2, &glossary2, &app2,
                         ).await;
                     });
                 }
@@ -421,7 +441,7 @@ pub async fn start_capture(
                     &provider_str,
                     &language, &api_key,
                     &groq_key,
-                    &whisper_prompt, &app_clone,
+                    &whisper_prompt, &whisper_glossary, &app_clone,
                 ).await;
 
                 let remaining = total - (i + 1);
