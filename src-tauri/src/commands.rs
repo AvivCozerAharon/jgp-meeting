@@ -1,18 +1,51 @@
 /// commands.rs
 /// Comandos Tauri expostos ao frontend React via invoke().
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Instant;
 
+use arc_swap::ArcSwap;
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use crate::ai::{self, MeetingSummary, SpeakerSegment};
+use crate::ai::{self, MeetingSummary};
 use crate::audio::{self, AudioCaptureState, AudioChunk, AudioSource};
 use crate::detection;
 use crate::export;
 use crate::storage::{self, AppSettings, Meeting, MeetingType};
 use crate::transcription;
+
+fn jaccard_bigrams(a: &str, b: &str) -> f32 {
+    use std::collections::HashSet;
+    let bigrams_of = |s: &str| -> HashSet<(String, String)> {
+        let words: Vec<&str> = s.split_whitespace().collect();
+        words.windows(2)
+            .map(|w| (w[0].to_lowercase(), w[1].to_lowercase()))
+            .collect()
+    };
+    let a_set = bigrams_of(a);
+    let b_set = bigrams_of(b);
+    if a_set.is_empty() && b_set.is_empty() {
+        // Both truly empty strings → identical
+        return if a.trim().is_empty() && b.trim().is_empty() { 1.0 } else { 0.0 };
+    }
+    if a_set.is_empty() || b_set.is_empty() { return 0.0; }
+    let intersection = a_set.intersection(&b_set).count() as f32;
+    let union_count = a_set.union(&b_set).count() as f32;
+    intersection / union_count
+}
+
+fn is_known_filler(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    matches!(
+        lower.as_str(),
+        "é" | "é." | "é.." | "tchau" | "tchau." | "tchau!" | "tchau, tchau"
+        | "sim" | "sim." | "não" | "não." | "ok" | "ok." | "ah" | "ah." | "hmm"
+        | "uh" | "uh huh" | "hum" | "hm" | "aham" | "ei" | "opa"
+        | "tchau tchau" | "tchau, tchau!" | "é. é." | "é. é. é."
+    )
+}
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -29,7 +62,9 @@ fn summary_credentials(settings: &storage::AppSettings) -> (String, &'static str
 
 pub struct AppState {
     pub capture_state: Arc<AudioCaptureState>,
-    pub transcript: Mutex<String>,
+    /// Lock-free transcript buffer (ArcSwap para escrita sem bloquear leitura)
+    pub transcript: ArcSwap<String>,
+    pub segments: Mutex<Vec<storage::TranscriptSegment>>,
     pub current_meeting: Mutex<Option<Meeting>>,
     pub capture_start: Mutex<Option<Instant>>,
     pub stop_tx: Mutex<Option<mpsc::Sender<()>>>,
@@ -42,7 +77,8 @@ impl AppState {
     pub fn new() -> Self {
         Self {
             capture_state: Arc::new(AudioCaptureState::new()),
-            transcript: Mutex::new(String::new()),
+            transcript: ArcSwap::from_pointee(String::new()),
+            segments: Mutex::new(Vec::new()),
             current_meeting: Mutex::new(None),
             capture_start: Mutex::new(None),
             stop_tx: Mutex::new(None),
@@ -65,7 +101,6 @@ pub struct CaptureStatus {
     pub audio_level: f32,
     pub mic_level: f32,
     pub mic_muted: bool,
-    pub is_paused: bool,
     pub transcript_length: usize,
     pub duration_secs: u64,
 }
@@ -83,7 +118,6 @@ pub struct MeetingResult {
 /// Inicia a captura de áudio + pipeline de transcrição.
 /// Feature 1: usa silence_threshold das configurações.
 /// Feature 5: captura microfone em pipeline separada se capture_microphone=true.
-/// Feature 7: usa Whisper local se use_local_whisper=true.
 /// Feature 8: aplica template do tipo de reunião no resumo.
 #[tauri::command]
 pub async fn start_capture(
@@ -98,21 +132,8 @@ pub async fn start_capture(
     let settings = storage::load_settings()
         .map_err(|e| format!("Erro ao carregar configurações: {e}"))?;
 
-    // Determina o provider de transcrição.
-    // O campo transcription_provider tem precedência; use_local_whisper só entra
-    // quando o provider não é "openai" nem "groq" (compatibilidade com configs antigas).
-    let provider = if settings.transcription_provider == "local"
-        || (settings.transcription_provider != "openai"
-            && settings.transcription_provider != "groq"
-            && settings.use_local_whisper
-            && !settings.local_whisper_exe.is_empty())
-    {
-        "local"
-    } else {
-        settings.transcription_provider.as_str()
-    };
+    let provider = settings.transcription_provider.as_str();
 
-    // Valida API key do provider selecionado
     match provider {
         "openai" if settings.openai_api_key.is_empty() => {
             return Err("Chave da API OpenAI não configurada.".to_string());
@@ -120,37 +141,32 @@ pub async fn start_capture(
         "groq" if settings.groq_api_key.is_empty() => {
             return Err("Chave da API Groq não configurada.".to_string());
         }
-        "local" if settings.local_whisper_exe.is_empty() => {
-            return Err("Executável whisper-cli não configurado.".to_string());
-        }
         _ => {}
     }
-
-    let use_local = provider == "local";
 
     // Inicializa reunião com o tipo selecionado
     let mut meeting = Meeting::new();
     meeting.meeting_type = meeting_type.or(Some(settings.default_meeting_type.clone()));
 
-    *state.current_meeting.lock().unwrap() = Some(meeting);
-    *state.transcript.lock().unwrap() = String::new();
-    *state.capture_start.lock().unwrap() = Some(Instant::now());
+    *state.current_meeting.lock() = Some(meeting);
+    state.transcript.store(Arc::new(String::new()));
+    state.segments.lock().clear();
+    *state.capture_start.lock() = Some(Instant::now());
+    let recording_start: Instant = state.capture_start.lock().unwrap();
 
     state
         .capture_state
         .is_capturing
         .store(true, std::sync::atomic::Ordering::SeqCst);
-    // Reseta mic muted e paused para nova sessão
+    // Reseta mic muted para nova sessão
     state.capture_state.set_mic_muted(false);
-    state.capture_state.set_paused(false);
 
     let (chunk_tx, chunk_rx) = mpsc::channel::<AudioChunk>();
     let (stop_tx, stop_rx) = mpsc::channel::<()>();
-    *state.stop_tx.lock().unwrap() = Some(stop_tx);
+    *state.stop_tx.lock() = Some(stop_tx);
 
     // Inicia captura de áudio (Feature 1: threshold, Feature 5: mic com config separado)
-    let capture_arc        = Arc::clone(&state.capture_state);
-    let capture_arc_worker = Arc::clone(&state.capture_state);
+    let capture_arc = Arc::clone(&state.capture_state);
     let system_config = audio::SystemConfig {
         chunk_duration_secs: settings.chunk_duration_secs,
         silence_threshold: settings.silence_threshold,
@@ -160,7 +176,6 @@ pub async fn start_capture(
     let mic_config = audio::MicConfig {
         enabled: settings.capture_microphone,
         device_id: settings.selected_microphone.clone(),
-        chunk_duration_secs: settings.mic_chunk_duration_secs,
         silence_threshold: settings.mic_silence_threshold,
         auto_gain: settings.mic_auto_gain,
         gain_max: settings.mic_gain_max,
@@ -178,10 +193,9 @@ pub async fn start_capture(
     let api_key          = settings.openai_api_key.clone();
     let groq_key         = settings.groq_api_key.clone();
     let language         = settings.transcription_language.clone();
-    let whisper_exe      = settings.local_whisper_exe.clone();
-    let whisper_model    = settings.local_whisper_model.clone();
     let whisper_prompt   = settings.whisper_prompt.clone();
     let app_clone        = app.clone();
+    let recording_start  = recording_start;
 
     // Worker de transcrição
     // Ao receber sinal de stop, NÃO para imediatamente: drena todos os chunks
@@ -193,17 +207,17 @@ pub async fn start_capture(
     //   3. Coleta TODOS os chunks restantes no canal
     //   4. Processa sequencialmente com indicador de progresso
     //   5. Re-salva a reunião com a transcrição completa
+    let transcription_sem = Arc::new(tokio::sync::Semaphore::new(3));
     tokio::spawn(async move {
         log::info!("Worker de transcrição iniciado (provider={})", provider_str);
 
         /// Helper: transcreve um chunk e acumula no transcript global.
         /// Retorna true se obteve texto não-vazio.
-        #[allow(clippy::too_many_arguments)]
         async fn process_chunk(
             chunk: AudioChunk,
+            capture_start: Instant,
+            chunk_recv_ms: u64,
             provider: &str,
-            whisper_exe: &str,
-            whisper_model: &str,
             language: &str,
             api_key: &str,
             groq_key: &str,
@@ -212,79 +226,104 @@ pub async fn start_capture(
         ) -> bool {
             let _ = app.emit("transcription-processing", true);
 
-            // Local precisa de WAV mono 16kHz; OpenAI/Groq aceitam qualquer formato
-            let needs_whisper_format = provider == "local";
-
-            let wav_bytes = if needs_whisper_format {
-                match chunk.to_wav_bytes_whisper() {
-                    Ok(b) => b,
-                    Err(e) => {
-                        log::error!("Erro ao converter WAV: {e}");
-                        let _ = app.emit("transcription-processing", false);
-                        return false;
-                    }
-                }
-            } else {
-                match chunk.to_wav_bytes() {
-                    Ok(b) => b,
-                    Err(e) => {
-                        log::error!("Erro ao codificar WAV: {e}");
-                        let _ = app.emit("transcription-processing", false);
-                        return false;
-                    }
+            let wav_bytes = match chunk.to_wav_bytes() {
+                Ok(b) => b,
+                Err(e) => {
+                    log::error!("Erro ao codificar WAV: {e}");
+                    let _ = app.emit("transcription-processing", false);
+                    return false;
                 }
             };
 
-            let prompt_opt = if whisper_prompt.is_empty() { None } else { Some(whisper_prompt) };
+            // Build accumulated context: last 50 words of transcript so far + user's static prompt
+            let app_state = app.state::<AppState>();
+            let accumulated = app_state.transcript.load();
+            let context_words: String = {
+                let words: Vec<&str> = accumulated.split_whitespace().collect();
+                let start = words.len().saturating_sub(50);
+                words[start..].join(" ")
+            };
+            let effective_prompt: Option<String> = match (context_words.is_empty(), whisper_prompt.is_empty()) {
+                (true,  true)  => None,
+                (true,  false) => Some(whisper_prompt.to_string()),
+                (false, true)  => Some(context_words),
+                (false, false) => Some(format!("{} {}", context_words, whisper_prompt)),
+            };
+            let prompt_opt = effective_prompt.as_deref();
 
             let result = match provider {
                 "groq" => {
                     transcription::transcribe_groq(wav_bytes, groq_key, Some(language), prompt_opt).await
                 }
-                "local" => {
-                    transcription::transcribe_local(wav_bytes, whisper_exe, whisper_model, language).await
-                }
                 _ => {
-                    // "openai" ou qualquer outro → OpenAI Whisper
                     transcription::transcribe_audio(wav_bytes, api_key, Some(language), prompt_opt).await
                 }
             };
 
             let got_text = match result {
                 Ok(text) if !text.is_empty() => {
-                    let app_state = app.state::<AppState>();
-                    let mut transcript = app_state.transcript.lock().unwrap();
-                    if !transcript.is_empty() {
-                        transcript.push(' ');
-                    }
-                    // Prefixa com a fonte do áudio (deduplica se igual ao último)
-                    let prefix = match chunk.source {
-                        AudioSource::System => "[Reunião]",
-                        AudioSource::Microphone => "[Você]",
+                    // Filtro: descarta transcrições muito curtas/filler do microfone
+                    // Isso evita que ruído amplificado pelo AGC vire "É.", "Tchau!", etc.
+                    let is_filler = chunk.source == AudioSource::Microphone && {
+                        let trimmed = text.trim();
+                        let len = trimmed.chars().count();
+                        len < 5 || is_known_filler(trimmed)
                     };
+                    if is_filler {
+                        log::debug!("Mic filler descartado: {:?}", text.trim());
+                        false
+                    } else {
+                        // Compute timestamp from chunk_recv_ms (captured before the API call)
+                        let chunk_duration_ms = (chunk.duration_secs * 1000.0) as u64;
+                        let timestamp_ms = chunk_recv_ms.saturating_sub(chunk_duration_ms);
 
-                    let last_tag = {
-                        let pos_reuniao = transcript.rfind("[Reunião]");
-                        let pos_voce = transcript.rfind("[Você]");
-                        match (pos_reuniao, pos_voce) {
-                            (Some(r), Some(v)) => {
-                                if r > v { Some("[Reunião]") } else { Some("[Você]") }
-                            }
-                            (Some(_), None) => Some("[Reunião]"),
-                            (None, Some(_)) => Some("[Você]"),
-                            (None, None) => None,
+                        let source = match chunk.source {
+                            AudioSource::System => "system".to_string(),
+                            AudioSource::Microphone => "mic".to_string(),
+                        };
+
+                        let segment = storage::TranscriptSegment {
+                            source: source.clone(),
+                            timestamp_ms,
+                            text: text.clone(),
+                        };
+
+                        // Dedup: skip if too similar to the most recent segment of the same source.
+                        // Short texts (< 4 words) skip the check — bigrams unreliable on short strings.
+                        let word_count = text.split_whitespace().count();
+                        let is_duplicate = if word_count < 4 {
+                            false
+                        } else {
+                            let segs = app_state.segments.lock();
+                            segs.iter()
+                                .rev()
+                                .find(|s| s.source == source)
+                                .map(|prev| jaccard_bigrams(&prev.text, &text) >= 0.85)
+                                .unwrap_or(false)
+                        };
+
+                        if is_duplicate {
+                            log::debug!(
+                                "Segment deduped (source={}): {:?}",
+                                source,
+                                &text[..text.len().min(50)]
+                            );
+                            let _ = app.emit("transcription-processing", false);
+                            return false;
                         }
-                    };
 
-                    if last_tag != Some(prefix) {
-                        transcript.push_str(prefix);
+                        // Insert sorted by timestamp_ms and derive flat transcript in one lock scope
+                        let flat: String = {
+                            let mut segs = app_state.segments.lock();
+                            let pos = segs.partition_point(|s| s.timestamp_ms <= timestamp_ms);
+                            segs.insert(pos, segment.clone());
+                            segs.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join(" ")
+                        };
+                        app_state.transcript.store(Arc::new(flat));
+
+                        let _ = app.emit("transcription-update", &segment);
+                        true
                     }
-                    transcript.push(' ');
-                    transcript.push_str(&crate::text_processing::normalize_numbers(&text));
-                    let full = transcript.clone();
-                    drop(transcript);
-                    let _ = app.emit("transcription-update", full);
-                    true
                 }
                 Ok(_) => {
                     log::debug!("Chunk transcrito como vazio (source={:?})", chunk.source);
@@ -312,16 +351,24 @@ pub async fn start_capture(
 
             match chunk_rx.recv_timeout(std::time::Duration::from_millis(200)) {
                 Ok(chunk) => {
-                    // Descarta chunk sem transcrever quando pausado
-                    if capture_arc_worker.is_paused() {
-                        continue;
-                    }
-                    process_chunk(
-                        chunk, &provider_str,
-                        &whisper_exe, &whisper_model, &language, &api_key,
-                        &groq_key,
-                        &whisper_prompt, &app_clone,
-                    ).await;
+                    let chunk_recv_ms = recording_start.elapsed().as_millis() as u64;
+                    let permit = Arc::clone(&transcription_sem)
+                        .acquire_owned()
+                        .await
+                        .expect("Semaphore closed");
+                    let app2      = app_clone.clone();
+                    let provider2 = provider_str.clone();
+                    let lang2     = language.clone();
+                    let key2      = api_key.clone();
+                    let groq2     = groq_key.clone();
+                    let prompt2   = whisper_prompt.clone();
+                    tokio::spawn(async move {
+                        let _permit = permit; // released when task ends
+                        process_chunk(
+                            chunk, recording_start, chunk_recv_ms,
+                            &provider2, &lang2, &key2, &groq2, &prompt2, &app2,
+                        ).await;
+                    });
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => continue,
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
@@ -368,9 +415,11 @@ pub async fn start_capture(
             log::info!("Draining: processando {} chunks pendentes...", total);
 
             for (i, drain_chunk) in pre_drain.into_iter().enumerate() {
+                let chunk_recv_ms = recording_start.elapsed().as_millis() as u64;
                 process_chunk(
-                    drain_chunk, &provider_str,
-                    &whisper_exe, &whisper_model, &language, &api_key,
+                    drain_chunk, recording_start, chunk_recv_ms,
+                    &provider_str,
+                    &language, &api_key,
                     &groq_key,
                     &whisper_prompt, &app_clone,
                 ).await;
@@ -393,18 +442,21 @@ pub async fn start_capture(
 
         // Re-salva a reunião com a transcrição completa (incluindo chunks drenados)
         let app_state = app_clone.state::<AppState>();
-        if let Some(meeting_id) = app_state.draining_meeting_id.lock().unwrap().take() {
-            let final_transcript = app_state.transcript.lock().unwrap().clone();
+        if let Some(meeting_id) = app_state.draining_meeting_id.lock().take() {
+            let final_segs: Vec<storage::TranscriptSegment> = app_state.segments.lock().clone();
+            let final_transcript: String = final_segs.iter()
+                .map(|s| s.text.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
             if let Ok(mut meeting) = storage::load_meeting(&meeting_id) {
                 if meeting.transcript.len() < final_transcript.len() {
                     meeting.transcript = final_transcript;
+                    meeting.segments = if final_segs.is_empty() { None } else { Some(final_segs) };
                     if let Err(e) = storage::save_meeting(&meeting) {
                         log::error!("Erro ao re-salvar reunião após draining: {e}");
                     } else {
-                        log::info!("Reunião {meeting_id} atualizada com transcrição completa ({} chars)",
-                            meeting.transcript.len());
-                        // Notifica o frontend que a reunião foi atualizada com transcript completo.
-                        // Isso permite que o HistoryPage recarregue os dados se estiver aberto.
+                        log::info!("Reunião {meeting_id} atualizada ({} segmentos)",
+                            meeting.segments.as_ref().map(|s| s.len()).unwrap_or(0));
                         let _ = app_clone.emit("meeting-updated", serde_json::json!({
                             "meeting_id": meeting_id,
                             "transcript_length": meeting.transcript.len()
@@ -422,8 +474,8 @@ pub async fn start_capture(
     let cap_level = Arc::clone(&state.capture_state);
     tokio::spawn(async move {
         while cap_level.is_capturing() {
-            let level = *cap_level.current_level.lock().unwrap();
-            let mic   = *cap_level.mic_level.lock().unwrap();
+            let level = *cap_level.current_level.lock();
+            let mic   = *cap_level.mic_level.lock();
             let _ = app_level.emit("audio-level", level);
             let _ = app_level.emit("mic-level", mic);
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -450,24 +502,24 @@ pub async fn stop_capture(
         .is_capturing
         .store(false, std::sync::atomic::Ordering::SeqCst);
 
-    if let Some(tx) = state.stop_tx.lock().unwrap().take() {
+    if let Some(tx) = state.stop_tx.lock().take() {
         let _ = tx.send(());
     }
 
     let mut meeting = state
         .current_meeting
         .lock()
-        .unwrap()
         .take()
         .unwrap_or_default();
 
-    meeting.transcript = state.transcript.lock().unwrap().clone();
+    let segs: Vec<storage::TranscriptSegment> = state.segments.lock().clone();
+    meeting.transcript = segs.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join(" ");
+    meeting.segments = if segs.is_empty() { None } else { Some(segs) };
     meeting.ended_at = Some(chrono::Utc::now());
     meeting.duration_secs = state
         .capture_start
         .lock()
-        .unwrap()
-        .map(|s| s.elapsed().as_secs())
+        .map(|s: Instant| s.elapsed().as_secs())
         .unwrap_or(0);
 
     if meeting.transcript.trim().is_empty() {
@@ -476,10 +528,11 @@ pub async fn stop_capture(
 
     let id = meeting.id.clone();
     storage::save_meeting(&meeting).map_err(|e| format!("Erro ao salvar reunião: {e}"))?;
-    *state.capture_start.lock().unwrap() = None;
+    state.segments.lock().clear();
+    *state.capture_start.lock() = None;
 
     // Armazena o ID da reunião para o worker re-salvar após draining
-    *state.draining_meeting_id.lock().unwrap() = Some(id.clone());
+    *state.draining_meeting_id.lock() = Some(id.clone());
 
     // Feature 15: auto-resumo em background
     let settings = storage::load_settings().unwrap_or_default();
@@ -518,8 +571,6 @@ pub async fn stop_capture(
     }
 
     log::info!("Reunião {id} salva");
-    // Notifica todas as janelas (inclusive compliance) que a gravação terminou
-    let _ = app.emit("recording-stopped", &id);
     Ok(id)
 }
 
@@ -527,18 +578,111 @@ pub async fn stop_capture(
 pub async fn get_capture_status(state: State<'_, AppState>) -> Result<CaptureStatus, String> {
     Ok(CaptureStatus {
         is_capturing: state.capture_state.is_capturing(),
-        audio_level: *state.capture_state.current_level.lock().unwrap(),
-        mic_level: *state.capture_state.mic_level.lock().unwrap(),
+        audio_level: *state.capture_state.current_level.lock(),
+        mic_level: *state.capture_state.mic_level.lock(),
         mic_muted: state.capture_state.is_mic_muted(),
-        is_paused: state.capture_state.is_paused(),
-        transcript_length: state.transcript.lock().unwrap().len(),
+        transcript_length: state.transcript.load().len(),
         duration_secs: state
             .capture_start
             .lock()
-            .unwrap()
-            .map(|s| s.elapsed().as_secs())
+            .map(|s: Instant| s.elapsed().as_secs())
             .unwrap_or(0),
     })
+}
+
+/// Teste de microfone: grava 3 segundos e retorna RMS médio, pico e amostras.
+/// Útil para calibrar o silence_threshold.
+#[tauri::command]
+pub async fn test_microphone(
+    state: State<'_, AppState>,
+    app: AppHandle,
+) -> Result<serde_json::Value, String> {
+    use std::sync::atomic::Ordering;
+
+    let settings = storage::load_settings().map_err(|e| e.to_string())?;
+    if !settings.capture_microphone {
+        return Err("Microfone desabilitado nas configurações.".into());
+    }
+
+    let capture_state = Arc::new(AudioCaptureState::new());
+    let (chunk_tx, chunk_rx) = mpsc::channel::<AudioChunk>();
+
+    let cap_clone = Arc::clone(&capture_state);
+    let mic_config = audio::MicConfig {
+        enabled: true,
+        device_id: settings.selected_microphone.clone(),
+        silence_threshold: 0.0, // Sem filtro para o teste
+        auto_gain: false,       // Sem AGC para ver nível real
+        gain_max: 1.0,
+    };
+
+    audio::start_capture(
+        cap_clone,
+        chunk_tx,
+        audio::SystemConfig {
+            chunk_duration_secs: 1.0,
+            silence_threshold: 0.0,
+            auto_gain: false,
+            gain_max: 1.0,
+        },
+        mic_config,
+    )
+    .map_err(|e| format!("Erro ao iniciar captura: {e}"))?;
+
+    // Coleta por 3 segundos
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    capture_state.is_capturing.store(false, Ordering::SeqCst);
+
+    let mut rms_values: Vec<f32> = Vec::new();
+    let mut peak: f32 = 0.0;
+    let mut chunks_received = 0;
+
+    while let Ok(chunk) = chunk_rx.try_recv() {
+        if chunk.source == AudioSource::Microphone {
+            let rms = (chunk.samples.iter().map(|s| s * s).sum::<f32>() / chunk.samples.len() as f32).sqrt();
+            let chunk_peak = chunk.samples.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+            rms_values.push(rms);
+            peak = peak.max(chunk_peak);
+            chunks_received += 1;
+        }
+    }
+
+    if rms_values.is_empty() {
+        return Ok(serde_json::json!({
+            "status": "no_data",
+            "message": "Nenhum chunk de microfone recebido. Verifique se o microfone está funcionando.",
+            "threshold_current": settings.mic_silence_threshold,
+        }));
+    }
+
+    let avg_rms = rms_values.iter().sum::<f32>() / rms_values.len() as f32;
+    let min_rms = rms_values.iter().cloned().fold(f32::MAX, f32::min);
+    let max_rms = rms_values.iter().cloned().fold(f32::MIN, f32::max);
+
+    let recommendation = if avg_rms < 0.001 {
+        "Muito baixo — microfone pode estar desligado ou muito longe"
+    } else if avg_rms < 0.005 {
+        "Baixo — threshold de 0.003 pode funcionar"
+    } else if avg_rms < 0.02 {
+        "Normal para fala — threshold de 0.01 é recomendado"
+    } else {
+        "Alto — threshold de 0.02 ou mais para evitar ruído"
+    };
+
+    Ok(serde_json::json!({
+        "status": "ok",
+        "chunks_received": chunks_received,
+        "avg_rms": format!("{:.4}", avg_rms),
+        "min_rms": format!("{:.4}", min_rms),
+        "max_rms": format!("{:.4}", max_rms),
+        "peak": format!("{:.4}", peak),
+        "threshold_current": settings.mic_silence_threshold,
+        "recommendation": recommendation,
+        "message": format!(
+            "RMS médio={:.4}, pico={:.4}. Threshold atual={:.4}. {}",
+            avg_rms, peak, settings.mic_silence_threshold, recommendation
+        ),
+    }))
 }
 
 /// Muta ou desmuta o microfone durante a gravação.
@@ -552,61 +696,9 @@ pub async fn toggle_mic_mute(state: State<'_, AppState>) -> Result<bool, String>
     Ok(new_val)
 }
 
-/// Pausa a transcrição (áudio continua sendo capturado, chunks são descartados).
-/// Retorna o novo estado (true = pausado).
-#[tauri::command]
-pub async fn toggle_pause_capture(
-    state: State<'_, AppState>,
-    app: AppHandle,
-) -> Result<bool, String> {
-    let new_val = !state.capture_state.is_paused();
-    state.capture_state.set_paused(new_val);
-    log::info!("Captura {}", if new_val { "pausada" } else { "retomada" });
-    let _ = app.emit("capture-paused", new_val);
-    Ok(new_val)
-}
-
-/// Abre a janela flutuante de compliance (GRAVANDO badge + controles).
-#[tauri::command]
-pub async fn open_compliance_window(app: AppHandle) -> Result<(), String> {
-    if let Some(existing) = app.get_webview_window("compliance") {
-        let _ = existing.show();
-        return Ok(());
-    }
-
-    let url = if cfg!(debug_assertions) {
-        tauri::WebviewUrl::External("http://localhost:1420/#compliance".parse().unwrap())
-    } else {
-        tauri::WebviewUrl::App("index.html#compliance".into())
-    };
-
-    tauri::WebviewWindowBuilder::new(&app, "compliance", url)
-        .title("JGP Meeting — Gravando")
-        .inner_size(300.0, 72.0)
-        .resizable(false)
-        .decorations(false)
-        .transparent(true)
-        .always_on_top(true)
-        .skip_taskbar(true)
-        .position(20.0, 20.0)
-        .build()
-        .map_err(|e| format!("Erro ao abrir janela de compliance: {e}"))?;
-
-    Ok(())
-}
-
-/// Fecha a janela flutuante de compliance.
-#[tauri::command]
-pub async fn close_compliance_window(app: AppHandle) -> Result<(), String> {
-    if let Some(win) = app.get_webview_window("compliance") {
-        let _ = win.close();
-    }
-    Ok(())
-}
-
 #[tauri::command]
 pub async fn get_current_transcript(state: State<'_, AppState>) -> Result<String, String> {
-    Ok(state.transcript.lock().unwrap().clone())
+    Ok(state.transcript.load().to_string())
 }
 
 // ─── Comandos: Resumo IA ──────────────────────────────────────────────────────
@@ -687,36 +779,6 @@ pub async fn generate_followup_email(
     storage::save_meeting(&meeting).map_err(|e| format!("Erro ao salvar: {e}"))?;
 
     Ok(email)
-}
-
-// ─── Feature 10: Diarização ───────────────────────────────────────────────────
-
-/// Identifica os falantes na transcrição e salva os segmentos na reunião.
-#[tauri::command]
-pub async fn diarize_transcript(
-    meeting_id: String,
-    api_key: String,
-    model: Option<String>,
-    base_url: Option<String>,
-) -> Result<Vec<SpeakerSegment>, String> {
-    let mut meeting =
-        storage::load_meeting(&meeting_id).map_err(|e| format!("Reunião não encontrada: {e}"))?;
-
-    if meeting.transcript.trim().is_empty() {
-        return Err("Transcrição vazia — não é possível diarizar".to_string());
-    }
-
-    let model = model.unwrap_or_else(|| ai::default_model().to_string());
-    let endpoint = base_url.as_deref().unwrap_or(ai::OPENAI_ENDPOINT);
-
-    let segments = ai::diarize_transcript(&meeting.transcript, &api_key, &model, endpoint)
-        .await
-        .map_err(|e| format!("Erro na diarização: {e}"))?;
-
-    meeting.speakers = Some(segments.clone());
-    storage::save_meeting(&meeting).map_err(|e| format!("Erro ao salvar: {e}"))?;
-
-    Ok(segments)
 }
 
 // ─── Feature 4: Export ────────────────────────────────────────────────────────
@@ -833,7 +895,7 @@ pub async fn jgrc_get_form_data() -> Result<JgrcFormData, String> {
 
     // ── Step 1: GET /log_in → CSRF do formulário de login ─────────────────────
     let login_page = client
-        .get(&format!("{base_url}/log_in"))
+        .get(&format!("{base_url}/log_up"))
         .send()
         .await
         .map_err(|e| format!("Erro ao conectar no JGRC: {e}"))?
@@ -1552,7 +1614,6 @@ pub async fn register_global_shortcut(
     app: AppHandle,
     shortcut: String,
     mute_shortcut: Option<String>,
-    pause_shortcut: Option<String>,
 ) -> Result<(), String> {
     use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
@@ -1586,20 +1647,6 @@ pub async fn register_global_shortcut(
         }
     }
 
-    // Atalho de pause/resume transcrição
-    if let Some(ref pause) = pause_shortcut {
-        if !pause.is_empty() {
-            let app_clone = app.clone();
-            app.global_shortcut()
-                .on_shortcut(pause.as_str(), move |_app, _s, event| {
-                    if event.state() == ShortcutState::Pressed {
-                        let _ = app_clone.emit("toggle-pause", ());
-                    }
-                })
-                .map_err(|e| format!("Erro ao registrar atalho pause '{}': {}", pause, e))?;
-        }
-    }
-
     Ok(())
 }
 
@@ -1629,98 +1676,6 @@ pub async fn ask_about_transcript(
         .map_err(|e| format!("Erro ao responder pergunta: {e}"))
 }
 
-// ─── Download de modelo Whisper ───────────────────────────────────────────────
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct DownloadProgress {
-    pub model: String,
-    pub downloaded: u64,
-    pub total: u64,
-}
-
-/// Baixa um modelo ggml do Whisper.cpp a partir do Hugging Face.
-/// Emite eventos: "whisper-download-progress" (DownloadProgress) e "whisper-download-done" (caminho).
-/// Modelos suportados: tiny, tiny.en, base, base.en, small, small.en, medium, large-v3 etc.
-#[tauri::command]
-pub async fn download_whisper_model(
-    app: AppHandle,
-    model: String,
-) -> Result<String, String> {
-    let models_dir = storage::models_dir()
-        .map_err(|e| format!("Erro ao obter diretório de modelos: {e}"))?;
-
-    let filename = format!("ggml-{model}.bin");
-    let dest_path = models_dir.join(&filename);
-
-    if dest_path.exists() {
-        let path_str = dest_path.to_string_lossy().to_string();
-        let _ = app.emit("whisper-download-done", &path_str);
-        return Ok(path_str);
-    }
-
-    let url = format!(
-        "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-{model}.bin"
-    );
-
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(3600))
-        .build()
-        .map_err(|e| format!("Erro ao criar cliente HTTP: {e}"))?;
-
-    let mut response = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| format!("Erro de rede ao baixar modelo: {e}"))?;
-
-    if !response.status().is_success() {
-        return Err(format!("Modelo '{}' não encontrado (HTTP {})", model, response.status()));
-    }
-
-    let total = response.content_length().unwrap_or(0);
-    let _ = app.emit("whisper-download-progress", DownloadProgress {
-        model: model.clone(),
-        downloaded: 0,
-        total,
-    });
-
-    let mut file = std::fs::File::create(&dest_path)
-        .map_err(|e| format!("Erro ao criar arquivo: {e}"))?;
-
-    let mut downloaded: u64 = 0;
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|e| format!("Erro ao baixar chunk: {e}"))?
-    {
-        use std::io::Write;
-        file.write_all(&chunk)
-            .map_err(|e| format!("Erro ao escrever arquivo: {e}"))?;
-        downloaded += chunk.len() as u64;
-        let _ = app.emit("whisper-download-progress", DownloadProgress {
-            model: model.clone(),
-            downloaded,
-            total,
-        });
-    }
-
-    let path_str = dest_path.to_string_lossy().to_string();
-    let _ = app.emit("whisper-download-done", &path_str);
-    log::info!("Modelo Whisper '{model}' baixado em {path_str}");
-
-    // Atualiza local_whisper_model nas settings com o caminho completo do modelo baixado
-    if let Ok(mut settings) = storage::load_settings() {
-        settings.local_whisper_model = path_str.clone();
-        if let Err(e) = storage::save_settings(&settings) {
-            log::warn!("Não foi possível atualizar local_whisper_model nas settings: {e}");
-        } else {
-            log::info!("local_whisper_model atualizado para: {path_str}");
-        }
-    }
-
-    Ok(path_str)
-}
-
 /// Retorna a lista de dispositivos de captura de áudio (microfones) disponíveis no sistema.
 /// Inclui "Microfone padrão do sistema" como primeiro item (id vazio).
 #[tauri::command]
@@ -1728,45 +1683,59 @@ pub async fn list_microphones() -> Result<Vec<audio::AudioDevice>, String> {
     audio::list_capture_devices().map_err(|e| format!("Erro ao listar microfones: {e}"))
 }
 
-/// Retorna a lista de modelos Whisper já baixados no diretório de modelos.
+/// Atualiza o texto de um segmento específico de uma reunião salva.
+/// Re-deriva o campo `transcript` dos segmentos atualizados.
 #[tauri::command]
-pub async fn list_downloaded_whisper_models() -> Result<Vec<String>, String> {
-    let models_dir = storage::models_dir()
-        .map_err(|e| format!("Erro: {e}"))?;
-
-    let models = std::fs::read_dir(&models_dir)
-        .map_err(|e| format!("Erro ao ler diretório: {e}"))?
-        .filter_map(|entry| {
-            let path = entry.ok()?.path();
-            let name = path.file_name()?.to_str()?.to_string();
-            if name.starts_with("ggml-") && name.ends_with(".bin") {
-                Some(name.trim_start_matches("ggml-").trim_end_matches(".bin").to_string())
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    Ok(models)
-}
-
-#[tauri::command]
-pub async fn get_tags() -> Result<Vec<storage::Tag>, String> {
-    storage::load_tags().map_err(|e| format!("Erro ao carregar tags: {e}"))
-}
-
-#[tauri::command]
-pub async fn save_tags(tags: Vec<storage::Tag>) -> Result<(), String> {
-    storage::save_tags(&tags).map_err(|e| format!("Erro ao salvar tags: {e}"))
-}
-
-#[tauri::command]
-pub async fn update_meeting_tags(
+pub async fn update_meeting_segment(
     meeting_id: String,
-    tag_ids: Vec<String>,
-) -> Result<(), String> {
-    let mut meeting = storage::load_meeting(&meeting_id)
-        .map_err(|e| format!("Reunião não encontrada: {e}"))?;
-    meeting.tags = tag_ids;
-    storage::save_meeting(&meeting).map_err(|e| format!("Erro ao salvar reunião: {e}"))
+    timestamp_ms: u64,
+    text: String,
+) -> Result<Meeting, String> {
+    let mut meeting =
+        storage::load_meeting(&meeting_id).map_err(|e| format!("Reunião não encontrada: {e}"))?;
+
+    if let Some(ref mut segs) = meeting.segments {
+        let seg = segs.iter_mut().find(|s| s.timestamp_ms == timestamp_ms)
+            .ok_or_else(|| "Segment not found".to_string())?;
+        seg.text = text.trim().to_string();
+        meeting.transcript = segs.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join(" ");
+    } else {
+        // Reunião antiga sem segmentos — atualiza o transcript plano diretamente
+        let trimmed = text.trim().to_string();
+        if !trimmed.is_empty() {
+            meeting.transcript = trimmed;
+        }
+    }
+
+    storage::save_meeting(&meeting).map_err(|e| format!("Erro ao salvar: {e}"))?;
+    Ok(meeting)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::jaccard_bigrams;
+
+    #[test]
+    fn test_jaccard_identical() {
+        assert_eq!(jaccard_bigrams("hello world foo", "hello world foo"), 1.0);
+    }
+
+    #[test]
+    fn test_jaccard_completely_different() {
+        assert_eq!(jaccard_bigrams("hello world", "foo bar baz"), 0.0);
+    }
+
+    #[test]
+    fn test_jaccard_partial() {
+        let a = "a gente vai ouvir agora uma mensagem trocada";
+        let b = "a gente vai ouvir agora uma mensagem trocada entre";
+        let sim = jaccard_bigrams(a, b);
+        assert!(sim > 0.85, "Expected > 0.85, got {}", sim);
+    }
+
+    #[test]
+    fn test_jaccard_short_text_empty() {
+        assert_eq!(jaccard_bigrams("", ""), 1.0);
+        assert_eq!(jaccard_bigrams("hello", ""), 0.0);
+    }
 }
