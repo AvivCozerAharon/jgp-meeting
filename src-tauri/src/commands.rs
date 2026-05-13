@@ -101,6 +101,7 @@ pub struct CaptureStatus {
     pub audio_level: f32,
     pub mic_level: f32,
     pub mic_muted: bool,
+    pub is_paused: bool,
     pub transcript_length: usize,
     pub duration_secs: u64,
 }
@@ -370,6 +371,10 @@ pub async fn start_capture(
 
             match chunk_rx.recv_timeout(std::time::Duration::from_millis(200)) {
                 Ok(chunk) => {
+                    // Drop chunk silently while paused
+                    if app_clone.state::<AppState>().capture_state.is_paused() {
+                        continue;
+                    }
                     let chunk_recv_ms = recording_start.elapsed().as_millis() as u64;
                     let permit = Arc::clone(&transcription_sem)
                         .acquire_owned()
@@ -601,6 +606,7 @@ pub async fn get_capture_status(state: State<'_, AppState>) -> Result<CaptureSta
         audio_level: *state.capture_state.current_level.lock(),
         mic_level: *state.capture_state.mic_level.lock(),
         mic_muted: state.capture_state.is_mic_muted(),
+        is_paused: state.capture_state.is_paused(),
         transcript_length: state.transcript.load().len(),
         duration_secs: state
             .capture_start
@@ -713,6 +719,20 @@ pub async fn toggle_mic_mute(state: State<'_, AppState>) -> Result<bool, String>
     let new_val = !current;
     state.capture_state.set_mic_muted(new_val);
     log::info!("Microfone {}", if new_val { "mutado" } else { "desmutado" });
+    Ok(new_val)
+}
+
+/// Pausa ou retoma a transcrição. Retorna o novo estado (true = pausado).
+#[tauri::command]
+pub async fn toggle_pause_capture(
+    state: State<'_, AppState>,
+    app: AppHandle,
+) -> Result<bool, String> {
+    let current = state.capture_state.is_paused();
+    let new_val = !current;
+    state.capture_state.set_paused(new_val);
+    log::info!("Captura {}", if new_val { "pausada" } else { "retomada" });
+    let _ = app.emit("capture-paused", new_val);
     Ok(new_val)
 }
 
@@ -1729,6 +1749,63 @@ pub async fn update_meeting_segment(
 
     storage::save_meeting(&meeting).map_err(|e| format!("Erro ao salvar: {e}"))?;
     Ok(meeting)
+}
+
+// ─── Comandos: Tags ──────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn get_tags() -> Result<Vec<storage::Tag>, String> {
+    storage::load_tags().map_err(|e| format!("Erro ao carregar tags: {e}"))
+}
+
+#[tauri::command]
+pub async fn save_tags(tags: Vec<storage::Tag>) -> Result<(), String> {
+    storage::save_tags(&tags).map_err(|e| format!("Erro ao salvar tags: {e}"))
+}
+
+#[tauri::command]
+pub async fn update_meeting_tags(
+    meeting_id: String,
+    tag_ids: Vec<String>,
+) -> Result<(), String> {
+    let mut meeting = storage::load_meeting(&meeting_id)
+        .map_err(|e| format!("Reunião não encontrada: {e}"))?;
+    meeting.tags = tag_ids;
+    storage::save_meeting(&meeting).map_err(|e| format!("Erro ao salvar reunião: {e}"))
+}
+
+// ─── Comandos: Janela de Conformidade ────────────────────────────────────────
+
+/// Abre (ou foca) a janela de conformidade always-on-top.
+#[tauri::command]
+pub async fn open_compliance_window(app: AppHandle) -> Result<(), String> {
+    use tauri::{WebviewUrl, WebviewWindowBuilder};
+    if let Some(w) = app.get_webview_window("compliance") {
+        let _ = w.show();
+        let _ = w.set_focus();
+        return Ok(());
+    }
+    // main.tsx renders <ComplianceOverlay> when window.location.hash === "#compliance"
+    WebviewWindowBuilder::new(&app, "compliance", WebviewUrl::App("index.html#compliance".into()))
+        .title("")
+        .inner_size(340.0, 72.0)
+        .resizable(false)
+        .decorations(false)
+        .always_on_top(true)
+        .transparent(true)
+        .skip_taskbar(true)
+        .build()
+        .map_err(|e| format!("Falha ao abrir overlay: {e}"))?;
+    Ok(())
+}
+
+/// Fecha a janela de conformidade se existir.
+#[tauri::command]
+pub async fn close_compliance_window(app: AppHandle) -> Result<(), String> {
+    if let Some(w) = app.get_webview_window("compliance") {
+        let _ = w.close();
+    }
+    Ok(())
 }
 
 #[cfg(test)]
