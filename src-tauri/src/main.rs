@@ -7,8 +7,8 @@ mod commands;
 mod crypto;
 mod detection;
 mod export;
+mod http_client;
 mod storage;
-mod text_processing;
 mod transcription;
 
 use commands::AppState;
@@ -34,17 +34,12 @@ fn main() {
             commands::stop_capture,
             commands::get_capture_status,
             commands::toggle_mic_mute,
-            commands::toggle_pause_capture,
-            commands::open_compliance_window,
-            commands::close_compliance_window,
             commands::get_current_transcript,
             // Resumo IA (Feature 8: templates)
             commands::generate_summary,
             commands::generate_and_save_summary,
             // Feature 9: E-mail de follow-up
             commands::generate_followup_email,
-            // Feature 10: Diarização
-            commands::diarize_transcript,
             // Feature 4: Exportação
             commands::export_meeting,
             commands::open_export_folder,
@@ -63,13 +58,13 @@ fn main() {
             commands::register_global_shortcut,
             // Feature 29: Perguntas à transcrição
             commands::ask_about_transcript,
-            // Download de modelo Whisper
-            commands::download_whisper_model,
-            commands::list_downloaded_whisper_models,
             // Microfones disponíveis
             commands::list_microphones,
+            // Teste de microfone (debug)
+            commands::test_microphone,
             // Renomear + editar transcrição
             commands::update_meeting_meta,
+            commands::update_meeting_segment,
             // Integração JGRC
             commands::export_to_jgrc,
             commands::jgrc_open_login,
@@ -79,6 +74,11 @@ fn main() {
             commands::get_tags,
             commands::save_tags,
             commands::update_meeting_tags,
+            // Pausa
+            commands::toggle_pause_capture,
+            // Janela de conformidade
+            commands::open_compliance_window,
+            commands::close_compliance_window,
         ])
         .setup(|app| {
             #[cfg(debug_assertions)]
@@ -195,7 +195,7 @@ fn setup_global_shortcut(app: &mut tauri::App) {
         }
     }
 
-    // Atalho de pause/resume transcrição
+    // Atalho de pausa
     let pause_hotkey = settings.pause_hotkey.clone();
     if !pause_hotkey.is_empty() {
         let app_handle = app.handle().clone();
