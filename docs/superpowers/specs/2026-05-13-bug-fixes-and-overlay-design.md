@@ -216,7 +216,8 @@ pub async fn open_compliance_window(app: AppHandle) -> Result<(), String> {
         let _ = w.set_focus();
         return Ok(());
     }
-    WebviewWindowBuilder::new(&app, "compliance", WebviewUrl::App("compliance.html".into()))
+    // main.tsx renders <ComplianceOverlay> when window.location.hash === "#compliance"
+    WebviewWindowBuilder::new(&app, "compliance", WebviewUrl::App("index.html#compliance".into()))
         .title("")
         .inner_size(340.0, 72.0)
         .resizable(false)
@@ -273,7 +274,7 @@ Red accent when recording (`#ef4444`), amber when paused (`#f59e0b`).
 
 The `ComplianceOverlay.tsx` logic (state management, event listeners, handlers) stays **identical**. Only the JSX layout changes.
 
-**`src/App.tsx`** or router — the overlay window's URL must resolve to a route that renders `<ComplianceOverlay />`. Verify that `compliance.html` or a `/compliance` route exists and renders the component.
+**`src/main.tsx`** already handles routing: it renders `<ComplianceOverlay />` when `window.location.hash === "#compliance"`. No changes needed here.
 
 ---
 
