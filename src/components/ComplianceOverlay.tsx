@@ -13,85 +13,6 @@ function formatDuration(secs: number): string {
   return `${m}:${s}`;
 }
 
-// ── Sub-componente de botão ───────────────────────────────────────────────────
-
-interface CtrlBtnProps {
-  onClick: () => void;
-  title: string;
-  active?: boolean;
-  danger?: boolean;
-  children: React.ReactNode;
-}
-
-const CtrlBtn: React.FC<CtrlBtnProps> = ({ onClick, title, active, danger, children }) => (
-  <button
-    onClick={onClick}
-    title={title}
-    style={{
-      width: 28,
-      height: 28,
-      borderRadius: 8,
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "center",
-      border: `1px solid ${active ? "rgba(239,68,68,0.5)" : "rgba(255,255,255,0.08)"}`,
-      background: active
-        ? "rgba(239,68,68,0.22)"
-        : danger
-        ? "rgba(239,68,68,0.12)"
-        : "rgba(255,255,255,0.06)",
-      color: active
-        ? "#fca5a5"
-        : danger
-        ? "rgba(239,68,68,0.85)"
-        : "rgba(255,255,255,0.65)",
-      cursor: "pointer",
-      transition: "background 0.15s, color 0.15s, border-color 0.15s",
-      flexShrink: 0,
-      WebkitAppRegion: "no-drag",
-    } as React.CSSProperties}
-    onMouseEnter={(e) => {
-      const el = e.currentTarget as HTMLButtonElement;
-      el.style.background = danger
-        ? "rgba(239,68,68,0.28)"
-        : active
-        ? "rgba(239,68,68,0.35)"
-        : "rgba(255,255,255,0.12)";
-      el.style.color = danger ? "#fca5a5" : "rgba(255,255,255,0.9)";
-    }}
-    onMouseLeave={(e) => {
-      const el = e.currentTarget as HTMLButtonElement;
-      el.style.background = active
-        ? "rgba(239,68,68,0.22)"
-        : danger
-        ? "rgba(239,68,68,0.12)"
-        : "rgba(255,255,255,0.06)";
-      el.style.color = active
-        ? "#fca5a5"
-        : danger
-        ? "rgba(239,68,68,0.85)"
-        : "rgba(255,255,255,0.65)";
-    }}
-  >
-    {children}
-  </button>
-);
-
-// ── Separador vertical ────────────────────────────────────────────────────────
-
-const Sep: React.FC = () => (
-  <div
-    style={{
-      width: 1,
-      height: 20,
-      background: "rgba(255,255,255,0.10)",
-      flexShrink: 0,
-    }}
-  />
-);
-
-// ── Componente principal ──────────────────────────────────────────────────────
-
 export const ComplianceOverlay = () => {
   const [micMuted, setMicMuted] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
@@ -104,14 +25,14 @@ export const ComplianceOverlay = () => {
     document.body.className = "";
   }, []);
 
-  // Timer local — para quando pausado
+  // Timer local — parado quando pausado
   useEffect(() => {
     if (isPaused) return;
     const id = setInterval(() => setDuration((d) => d + 1), 1000);
     return () => clearInterval(id);
   }, [isPaused]);
 
-  // Sincroniza estado inicial + poll completo de status
+  // Sincroniza estado inicial + poll de fallback (5s)
   useEffect(() => {
     const sync = async () => {
       try {
@@ -131,10 +52,11 @@ export const ComplianceOverlay = () => {
     };
 
     sync();
-    const poll = setInterval(sync, 2000);
+    const poll = setInterval(sync, 5000);
     return () => clearInterval(poll);
   }, []);
 
+  // Eventos em tempo real
   useEffect(() => {
     const unsubs = [
       listen<boolean>("capture-paused", (e) => setIsPaused(e.payload)),
@@ -145,19 +67,25 @@ export const ComplianceOverlay = () => {
     return () => { unsubs.forEach((p) => p.then((fn) => fn())); };
   }, []);
 
-  const handleMute = useCallback(async () => {
-    try { setMicMuted(await invoke<boolean>("toggle_mic_mute")); } catch {}
+  // Optimistic updates — UI responde imediatamente
+  const handleMute = useCallback(() => {
+    setMicMuted((v) => !v);
+    invoke<boolean>("toggle_mic_mute")
+      .then(setMicMuted)
+      .catch(() => setMicMuted((v) => !v));
   }, []);
 
-  const handlePause = useCallback(async () => {
-    try { setIsPaused(await invoke<boolean>("toggle_pause_capture")); } catch {}
+  const handlePause = useCallback(() => {
+    setIsPaused((v) => !v);
+    invoke<boolean>("toggle_pause_capture")
+      .then(setIsPaused)
+      .catch(() => setIsPaused((v) => !v));
   }, []);
 
   const handleStop = useCallback(async () => {
     try {
       await invoke("stop_capture");
-    } catch (e) {
-      console.error("stop_capture falhou:", e);
+    } catch {
       invoke("close_compliance_window").catch(() => {});
     }
   }, []);
@@ -169,29 +97,28 @@ export const ComplianceOverlay = () => {
     <div
       style={{
         margin: 10,
-        padding: "0 14px",
-        height: 52,
-        borderRadius: 16,
+        padding: "0 12px",
+        height: 44,
+        borderRadius: 22,
         display: "flex",
         alignItems: "center",
-        gap: 12,
-        background: "rgba(11, 13, 20, 0.90)",
-        backdropFilter: "blur(24px) saturate(180%)",
-        WebkitBackdropFilter: "blur(24px) saturate(180%)",
-        border: "1px solid rgba(255,255,255,0.07)",
-        boxShadow:
-          "0 8px 32px rgba(0,0,0,0.45), 0 1px 0 rgba(255,255,255,0.04) inset",
+        gap: 10,
+        background: "rgba(22, 22, 24, 0.82)",
+        backdropFilter: "blur(20px) saturate(160%)",
+        WebkitBackdropFilter: "blur(20px) saturate(160%)",
+        border: "1px solid rgba(255,255,255,0.09)",
+        boxShadow: "0 4px 24px rgba(0,0,0,0.35)",
         WebkitAppRegion: "drag",
         userSelect: "none",
         cursor: "default",
       } as React.CSSProperties}
     >
-      {/* ── Logo JGP ── */}
+      {/* Logo JGP */}
       <img
         src={jgpLogo}
         alt="JGP"
         style={{
-          height: 22,
+          height: 18,
           width: "auto",
           opacity: 0.85,
           flexShrink: 0,
@@ -199,52 +126,39 @@ export const ComplianceOverlay = () => {
         }}
       />
 
-      <Sep />
+      {/* Separador */}
+      <div style={{ width: 1, height: 16, background: "rgba(255,255,255,0.10)", flexShrink: 0 }} />
 
-      {/* ── Badge REC / PAUSADO ── */}
+      {/* Badge REC / PAUSADO */}
       <div
         style={{
           display: "flex",
           alignItems: "center",
-          gap: 6,
-          padding: "3px 8px 3px 6px",
-          borderRadius: 8,
+          gap: 5,
+          padding: "2px 7px 2px 5px",
+          borderRadius: 7,
           background: accentDim,
           border: `1px solid ${accentColor}30`,
           flexShrink: 0,
         }}
       >
         {isPaused ? (
-          <Pause size={10} color={accentColor} strokeWidth={2.5} />
+          <Pause size={9} color={accentColor} strokeWidth={2.5} />
         ) : (
-          <span style={{ position: "relative", width: 8, height: 8, flexShrink: 0 }}>
-            <span
-              style={{
-                position: "absolute",
-                inset: 0,
-                borderRadius: "50%",
-                background: accentColor,
-                opacity: 0.5,
-                animation: "ping 1.2s cubic-bezier(0,0,0.2,1) infinite",
-              }}
-            />
-            <span
-              style={{
-                position: "relative",
-                display: "block",
-                width: 8,
-                height: 8,
-                borderRadius: "50%",
-                background: accentColor,
-              }}
-            />
-          </span>
+          <span className="rec-dot" style={{
+            display: "block",
+            width: 7,
+            height: 7,
+            borderRadius: "50%",
+            background: accentColor,
+            flexShrink: 0,
+          }} />
         )}
         <span
           style={{
             fontSize: 10,
             fontWeight: 700,
-            letterSpacing: "0.10em",
+            letterSpacing: "0.08em",
             color: accentColor,
             fontFamily: "system-ui, sans-serif",
           }}
@@ -253,45 +167,51 @@ export const ComplianceOverlay = () => {
         </span>
       </div>
 
-      {/* ── Timer ── */}
+      {/* Timer */}
       <span
         style={{
-          fontSize: 15,
-          fontWeight: 600,
+          fontSize: 13,
+          fontWeight: 500,
           fontFamily: "'SF Mono', 'Cascadia Code', 'Fira Code', monospace",
-          color: "rgba(255,255,255,0.90)",
+          color: "rgba(255,255,255,0.80)",
           letterSpacing: "0.03em",
           flexShrink: 0,
-          minWidth: 44,
+          minWidth: 38,
         }}
       >
         {formatDuration(duration)}
       </span>
 
-      <Sep />
+      {/* Separador */}
+      <div style={{ width: 1, height: 16, background: "rgba(255,255,255,0.10)", flexShrink: 0 }} />
 
-      {/* ── Controles ── */}
-      <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-        <CtrlBtn
+      {/* Controles */}
+      <div style={{ display: "flex", alignItems: "center", gap: 3 }}>
+        <button
+          className={`ctrl-btn${micMuted ? " active" : ""}`}
           onClick={handleMute}
           title={micMuted ? "Desmutar microfone" : "Mutar microfone"}
-          active={micMuted}
         >
-          {micMuted ? <MicOff size={13} strokeWidth={2} /> : <Mic size={13} strokeWidth={2} />}
-        </CtrlBtn>
+          {micMuted ? <MicOff size={12} strokeWidth={2} /> : <Mic size={12} strokeWidth={2} />}
+        </button>
 
-        <CtrlBtn
+        <button
+          className="ctrl-btn"
           onClick={handlePause}
           title={isPaused ? "Retomar gravação" : "Pausar gravação"}
         >
           {isPaused
-            ? <Play size={13} strokeWidth={2} />
-            : <Pause size={13} strokeWidth={2} />}
-        </CtrlBtn>
+            ? <Play size={12} strokeWidth={2} />
+            : <Pause size={12} strokeWidth={2} />}
+        </button>
 
-        <CtrlBtn onClick={handleStop} title="Parar gravação" danger>
-          <Square size={11} strokeWidth={0} fill="currentColor" />
-        </CtrlBtn>
+        <button
+          className="ctrl-btn danger"
+          onClick={handleStop}
+          title="Parar gravação"
+        >
+          <Square size={10} strokeWidth={0} fill="currentColor" />
+        </button>
       </div>
     </div>
   );
