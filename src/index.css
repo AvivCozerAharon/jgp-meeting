@@ -1,6 +1,11 @@
 /* index.css */
 /* Estilos globais do JGP Meeting */
 
+/* ─── ProseMirror (Tiptap) ──────────────────────────────────────────────────── */
+.ProseMirror:focus { outline: none; }
+.ProseMirror ul { list-style-type: disc; padding-left: 1.25rem; }
+.ProseMirror ol { list-style-type: decimal; padding-left: 1.25rem; }
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -184,4 +189,58 @@
     @apply dark:hover:bg-surface-700/60 dark:hover:border-surface-500/50;
     @apply dark:focus:ring-surface-600 dark:focus:ring-offset-surface-900;
   }
+}
+
+/* ─── Compliance Overlay ────────────────────────────────────────────────────── */
+
+@keyframes rec-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%       { opacity: 0.4; transform: scale(1.15); }
+}
+
+.rec-dot {
+  animation: rec-pulse 1.4s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+.ctrl-btn {
+  width: 26px;
+  height: 26px;
+  border-radius: 13px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.65);
+  cursor: pointer;
+  flex-shrink: 0;
+  -webkit-app-region: no-drag;
+  transition: background 80ms, color 80ms, border-color 80ms;
+}
+
+.ctrl-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.ctrl-btn.active {
+  border-color: rgba(239, 68, 68, 0.5);
+  background: rgba(239, 68, 68, 0.22);
+  color: #fca5a5;
+}
+
+.ctrl-btn.active:hover {
+  background: rgba(239, 68, 68, 0.35);
+  color: #fca5a5;
+}
+
+.ctrl-btn.danger {
+  border-color: rgba(239, 68, 68, 0.15);
+  background: rgba(239, 68, 68, 0.12);
+  color: rgba(239, 68, 68, 0.85);
+}
+
+.ctrl-btn.danger:hover {
+  background: rgba(239, 68, 68, 0.28);
+  color: #fca5a5;
 }
