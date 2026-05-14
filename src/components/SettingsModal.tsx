@@ -27,6 +27,7 @@ import {
   LogIn,
   Unplug,
   BookOpen,
+  SlidersHorizontal,
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import type { AppSettings, AudioDevice, MeetingType } from "@/types";
@@ -36,6 +37,7 @@ import { MEETING_TYPE_LABELS, MEETING_TYPE_ICONS } from "@/types";
 import { getSettings, saveSettings } from "@/services/storageService";
 import { Spinner } from "./LoadingSpinner";
 import { TagManager } from "./TagManager";
+import { MicTuner } from "./MicTuner";
 
 const ALL_MEETING_TYPES: MeetingType[] = [
   'general', 'standup', 'one_on_one', 'retrospective', 'commercial', 'interview',
@@ -159,6 +161,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ className, activeT
   const [showKey, setShowKey] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [showTagManager, setShowTagManager] = useState(false);
+  const [showMicTuner, setShowMicTuner] = useState(false);
 
   // Lista de microfones disponíveis no sistema
   const [microphones, setMicrophones] = useState<AudioDevice[]>([]);
@@ -323,7 +326,23 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ className, activeT
               onClick={() => updateSetting("selected_microphone", "")}
               className="mt-1 text-xs text-surface-400 hover:text-surface-600 dark:text-surface-500 dark:hover:text-surface-300 underline"
             >
-              Usar microfone padrão do sistema
+              Usar microfone padrao do sistema
+            </button>
+          )}
+
+          {settings.capture_microphone && (
+            <button
+              type="button"
+              onClick={() => setShowMicTuner(true)}
+              className={clsx(
+                "mt-3 w-full flex items-center justify-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold transition-all",
+                "bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
+                "border border-emerald-200 dark:border-emerald-500/20 hover:bg-emerald-100 dark:hover:bg-emerald-500/20",
+                "active:scale-[0.98]"
+              )}
+            >
+              <SlidersHorizontal className="w-3.5 h-3.5" />
+              Ajustar microfone
             </button>
           )}
         </div>
@@ -980,6 +999,13 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ className, activeT
       </div>
 
       <TagManager isOpen={showTagManager} onClose={() => setShowTagManager(false)} />
+      {showMicTuner && (
+        <MicTuner
+          settings={settings}
+          onUpdateSetting={updateSetting}
+          onClose={() => setShowMicTuner(false)}
+        />
+      )}
     </div>
   );
 };

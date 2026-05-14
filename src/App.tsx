@@ -7,14 +7,16 @@
 // durante a navegação. Sem isso, navegar para Histórico/Config mataria o
 // useAudioCapture e a gravação ficaria dessincronizada.
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { Navigation } from "@/components/Navigation";
 import { MainPage } from "@/pages/MainPage";
 import { HistoryPage } from "@/pages/HistoryPage";
 import { SettingsPage } from "@/pages/SettingsPage";
+import { SetupWizard } from "@/components/SetupWizard";
 import type { AppPage } from "@/types";
 import { useDraining } from "@/hooks/useDraining";
 import { ThemeContext, useThemeProvider } from "@/hooks/useTheme";
+import { getSettings } from "@/services/storageService";
 
 function App() {
   const [currentPage, setCurrentPage] = useState<AppPage>("main");
@@ -26,6 +28,14 @@ function App() {
   // Estado de gravação vindo do MainPage (via callback)
   const [isRecording, setIsRecording] = useState(false);
 
+  // Wizard de configuração inicial
+  const [showWizard, setShowWizard] = useState(false);
+  useEffect(() => {
+    getSettings()
+      .then((s) => { if (!s.setup_done) setShowWizard(true); })
+      .catch(() => {});
+  }, []);
+
   const handleNavigate = useCallback((page: AppPage) => {
     setCurrentPage(page);
   }, []);
@@ -36,6 +46,7 @@ function App() {
 
   return (
     <ThemeContext.Provider value={themeValue}>
+      {showWizard && <SetupWizard onComplete={() => setShowWizard(false)} />}
       <div className="flex h-screen w-screen overflow-hidden bg-surface-50 dark:bg-[#0c0f17]">
         {/* Sidebar de navegação */}
         <Navigation

@@ -12,7 +12,7 @@ import { TAG_COLORS } from "@/types";
 
 interface TagManagerProps {
   isOpen: boolean;
-  onClose: () => void;
+  onClose: (updatedTags?: Tag[]) => void;
 }
 
 // ─── Inline form state ────────────────────────────────────────────────────────
@@ -110,9 +110,9 @@ export const TagManager: React.FC<TagManagerProps> = ({ isOpen, onClose }) => {
   // Close on backdrop click
   const handleBackdropClick = useCallback(
     (e: React.MouseEvent<HTMLDivElement>) => {
-      if (e.target === e.currentTarget) onClose();
+      if (e.target === e.currentTarget) onClose(tags);
     },
-    [onClose]
+    [onClose, tags]
   );
 
   if (!isOpen) return null;
@@ -134,7 +134,7 @@ export const TagManager: React.FC<TagManagerProps> = ({ isOpen, onClose }) => {
             Gerenciar Tags
           </h2>
           <button
-            onClick={onClose}
+            onClick={() => onClose(tags)}
             className="p-1.5 rounded-lg text-surface-400 hover:text-surface-600 hover:bg-surface-100 dark:hover:text-surface-300 dark:hover:bg-surface-800 transition-colors"
             aria-label="Fechar"
           >
@@ -300,7 +300,7 @@ export const TagManager: React.FC<TagManagerProps> = ({ isOpen, onClose }) => {
             Nova tag
           </button>
           <button
-            onClick={onClose}
+            onClick={() => onClose(tags)}
             className="px-4 py-1.5 rounded-xl text-sm font-medium text-surface-600 dark:text-surface-400 hover:bg-surface-100 dark:hover:bg-surface-800 transition-colors"
           >
             Fechar

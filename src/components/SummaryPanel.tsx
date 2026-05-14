@@ -8,7 +8,7 @@ import {
   AlertCircle,
 } from "lucide-react";
 import type { MeetingSummary, SummaryStatus } from "@/types";
-import { Spinner, CardSkeleton } from "./LoadingSpinner";
+import { Spinner } from "./LoadingSpinner";
 
 interface SummaryPanelProps {
   summary: MeetingSummary | null;
@@ -88,10 +88,8 @@ export const SummaryPanel: React.FC<SummaryPanelProps> = ({
       {/* Conteúdo */}
       <div className="flex-1 overflow-y-auto p-4 min-h-0">
         {isLoading && (
-          <div className="space-y-3 animate-fade-in">
-            <CardSkeleton />
-            <CardSkeleton />
-            <CardSkeleton />
+          <div className="animate-fade-in">
+            <SummarySkeleton />
           </div>
         )}
 
@@ -184,5 +182,30 @@ const SummaryCard: React.FC<SummaryCardProps> = ({
       </h3>
     </div>
     {children}
+  </div>
+);
+
+const SummarySkeleton: React.FC = () => (
+  <div className="space-y-4 animate-pulse">
+    {/* Section 1 — Resumo */}
+    <div className="border border-surface-100 dark:border-surface-700/30 rounded-xl p-3 space-y-2">
+      <div className="h-3 bg-surface-200 dark:bg-surface-700 rounded w-1/4" />
+      <div className="h-3 bg-surface-100 dark:bg-surface-700/50 rounded w-full" />
+      <div className="h-3 bg-surface-100 dark:bg-surface-700/50 rounded w-5/6" />
+      <div className="h-3 bg-surface-100 dark:bg-surface-700/50 rounded w-4/6" />
+    </div>
+    {/* Section 2 — Decisões */}
+    <div className="border border-surface-100 dark:border-surface-700/30 rounded-xl p-3 space-y-2">
+      <div className="h-3 bg-surface-200 dark:bg-surface-700 rounded w-1/3" />
+      <div className="h-3 bg-surface-100 dark:bg-surface-700/50 rounded w-2/5" />
+      <div className="h-3 bg-surface-100 dark:bg-surface-700/50 rounded w-1/3" />
+      <div className="h-3 bg-surface-100 dark:bg-surface-700/50 rounded w-2/4" />
+    </div>
+    {/* Section 3 — Próximos passos */}
+    <div className="border border-surface-100 dark:border-surface-700/30 rounded-xl p-3 space-y-2">
+      <div className="h-3 bg-surface-200 dark:bg-surface-700 rounded w-2/5" />
+      <div className="h-3 bg-surface-100 dark:bg-surface-700/50 rounded w-1/3" />
+      <div className="h-3 bg-surface-100 dark:bg-surface-700/50 rounded w-2/5" />
+    </div>
   </div>
 );

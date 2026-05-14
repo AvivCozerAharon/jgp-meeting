@@ -363,7 +363,7 @@ impl AppSettings {
                 mandato, alocação, hedge, debêntures, cupom, duration, spread, \
                 yield, carry, valuation, follow-on, IPO, CVM, B3"
                 .to_string(),
-            whisper_glossary: String::new(),
+            whisper_glossary: "JGP, Régia, André Jakuski, FIP, CDI, IPCA, IBOV, Ibovespa, JGP Strategy, JGP Credit, JGP Hedge, benchmark, alocação, gestora, fundo multimercado, renda fixa, renda variável, B3, CVM, Selic, IRR, NAV, drawdown, volatilidade, follow-on, debenture, LCI, LCA".to_string(),
             theme: "dark".to_string(),
             jgrc_url: String::new(),
             jgrc_email: String::new(),
@@ -405,7 +405,10 @@ fn tags_file_path() -> Result<PathBuf> {
 pub fn load_tags() -> Result<Vec<Tag>> {
     let path = tags_file_path()?;
     if !path.exists() {
-        return Ok(Vec::new());
+        return Ok(vec![
+            Tag { id: "jgp".to_string(),   name: "JGP".to_string(),   color: "#22c55e".to_string() },
+            Tag { id: "regia".to_string(), name: "Régia".to_string(), color: "#3b82f6".to_string() },
+        ]);
     }
     let json = fs::read_to_string(&path).context("Falha ao ler tags")?;
     serde_json::from_str(&json).context("Falha ao parsear tags")

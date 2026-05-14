@@ -1,12 +1,9 @@
 // hooks/useTranscription.ts
-// Hook de transcrição: escuta atualizações em tempo real e gerencia
-// o estado do texto transcrito e do resumo gerado.
-
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { generateSummary } from "@/services/aiSummaryService";
 import { getSettings } from "@/services/storageService";
-import type { MeetingSummary, SummaryStatus, AppSettings } from "@/types";
+import type { TranscriptSegment, MeetingSummary, SummaryStatus, AppSettings } from "@/types";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 
 function getSummaryCredentials(settings: AppSettings): { apiKey: string; baseUrl: string } {
@@ -23,54 +20,51 @@ function getSummaryCredentials(settings: AppSettings): { apiKey: string; baseUrl
 }
 
 export interface TranscriptionState {
-  /** Texto completo transcrito até o momento */
+  segments: TranscriptSegment[];
+  /** Texto plano derivado dos segmentos (para resumo/export) */
   transcript: string;
-  /** Resumo gerado pela IA */
   summary: MeetingSummary | null;
-  /** Status da geração do resumo */
   summaryStatus: SummaryStatus;
-  /** Erro de geração de resumo */
   summaryError: string | null;
 }
 
 export interface TranscriptionActions {
-  /** Limpa a transcrição atual */
   clearTranscript: () => void;
-  /** Gera o resumo a partir da transcrição atual */
   generateSummaryFromCurrent: () => Promise<void>;
-  /** Define manualmente a transcrição (para restaurar estado) */
   setTranscript: (text: string) => void;
-  /** Para de escutar atualizações do backend (usado após stop para não poluir a tela com draining) */
   muteUpdates: () => void;
-  /** Volta a escutar atualizações do backend (usado ao iniciar nova gravação) */
   unmuteUpdates: () => void;
 }
 
-/**
- * Hook que escuta eventos de transcrição em tempo real do backend Tauri
- * e gerencia a geração de resumo via IA.
- */
 export function useTranscription(): [TranscriptionState, TranscriptionActions] {
-  const [transcript, setTranscriptState] = useState("");
+  const [segments, setSegments] = useState<TranscriptSegment[]>([]);
   const [summary, setSummary] = useState<MeetingSummary | null>(null);
   const [summaryStatus, setSummaryStatus] = useState<SummaryStatus>("idle");
   const [summaryError, setSummaryError] = useState<string | null>(null);
 
   const unlistenerRef = useRef<UnlistenFn | null>(null);
-  // Quando true, ignora eventos transcription-update do backend.
-  // Ativado após stop (para não repopular a tela com texto do draining).
-  // Desativado ao iniciar nova gravação.
   const mutedRef = useRef(false);
 
-  // Escuta atualizações de transcrição em tempo real
+  const transcript = useMemo(() => segments.map(s => s.text).join(" "), [segments]);
+
   useEffect(() => {
     let isMounted = true;
 
     const setup = async () => {
-      const unlisten = await listen<string>("transcription-update", (event) => {
-        if (isMounted && !mutedRef.current) {
-          setTranscriptState(event.payload);
-        }
+      const unlisten = await listen<TranscriptSegment>("transcription-update", (event) => {
+        if (!isMounted || mutedRef.current) return;
+        const seg = event.payload;
+        setSegments(prev => {
+          const existingIdx = prev.findIndex(s => s.timestamp_ms === seg.timestamp_ms);
+          if (existingIdx !== -1) {
+            const updated = [...prev];
+            updated[existingIdx] = seg;
+            return updated;
+          }
+          const pos = prev.findIndex(s => s.timestamp_ms > seg.timestamp_ms);
+          if (pos === -1) return [...prev, seg];
+          return [...prev.slice(0, pos), seg, ...prev.slice(pos)];
+        });
       });
       unlistenerRef.current = unlisten;
     };
@@ -79,21 +73,23 @@ export function useTranscription(): [TranscriptionState, TranscriptionActions] {
 
     return () => {
       isMounted = false;
-      if (unlistenerRef.current) {
-        unlistenerRef.current();
-      }
+      unlistenerRef.current?.();
     };
   }, []);
 
   const clearTranscript = useCallback(() => {
-    setTranscriptState("");
+    setSegments([]);
     setSummary(null);
     setSummaryStatus("idle");
     setSummaryError(null);
   }, []);
 
   const setTranscript = useCallback((text: string) => {
-    setTranscriptState(text);
+    if (text.trim()) {
+      setSegments([{ source: "system", timestamp_ms: 0, text }]);
+    } else {
+      setSegments([]);
+    }
   }, []);
 
   const generateSummaryFromCurrent = useCallback(async () => {
@@ -101,14 +97,11 @@ export function useTranscription(): [TranscriptionState, TranscriptionActions] {
       setSummaryError("Transcrição vazia. Grave uma reunião primeiro.");
       return;
     }
-
     setSummaryStatus("loading");
     setSummaryError(null);
     setSummary(null);
-
     try {
       const settings = await getSettings();
-
       const { apiKey, baseUrl } = getSummaryCredentials(settings);
       if (!apiKey) {
         throw new Error(
@@ -118,7 +111,6 @@ export function useTranscription(): [TranscriptionState, TranscriptionActions] {
         );
       }
       const result = await generateSummary(transcript, apiKey, settings.summary_model || "gpt-4o-mini", baseUrl);
-
       setSummary(result);
       setSummaryStatus("done");
     } catch (err) {
@@ -128,16 +120,11 @@ export function useTranscription(): [TranscriptionState, TranscriptionActions] {
     }
   }, [transcript]);
 
-  const muteUpdates = useCallback(() => {
-    mutedRef.current = true;
-  }, []);
-
-  const unmuteUpdates = useCallback(() => {
-    mutedRef.current = false;
-  }, []);
+  const muteUpdates = useCallback(() => { mutedRef.current = true; }, []);
+  const unmuteUpdates = useCallback(() => { mutedRef.current = false; }, []);
 
   return [
-    { transcript, summary, summaryStatus, summaryError },
+    { segments, transcript, summary, summaryStatus, summaryError },
     { clearTranscript, generateSummaryFromCurrent, setTranscript, muteUpdates, unmuteUpdates },
   ];
 }

@@ -1,7 +1,7 @@
 // components/MeetingCard.tsx
 // Row compacto de reunião para o histórico (layout de lista).
 
-import React from "react";
+import React, { useState } from "react";
 import clsx from "clsx";
 import {
   Calendar,
@@ -36,12 +36,22 @@ export const MeetingCard: React.FC<MeetingCardProps> = ({
 }) => {
   const hasSummary = !!meeting.summary;
   const preview = transcriptPreview(meeting.transcript, 20);
+  const [confirmOpen, setConfirmOpen] = useState(false);
 
   const handleDelete = (e: React.MouseEvent) => {
     e.stopPropagation();
-    if (window.confirm(`Excluir a reunião "${meeting.title}"? Esta ação não pode ser desfeita.`)) {
-      onDelete(meeting.id);
-    }
+    setConfirmOpen(true);
+  };
+
+  const handleConfirmDelete = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setConfirmOpen(false);
+    onDelete(meeting.id);
+  };
+
+  const handleCancelDelete = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setConfirmOpen(false);
   };
 
   const handleGenerateSummary = (e: React.MouseEvent) => {
@@ -143,12 +153,47 @@ export const MeetingCard: React.FC<MeetingCardProps> = ({
           </button>
         )}
 
-        <button
-          onClick={handleDelete}
-          className="p-1 rounded-lg text-surface-300 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10 transition-all duration-150"
-        >
-          <Trash2 className="w-3.5 h-3.5" />
-        </button>
+        <div className="relative">
+          <button
+            onClick={handleDelete}
+            className="p-1 rounded-lg text-surface-300 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10 transition-all duration-150"
+            aria-label="Excluir reunião"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+          </button>
+
+          {confirmOpen && (
+            <div
+              className={clsx(
+                "absolute right-0 bottom-full mb-2 z-50 w-56 p-3 rounded-xl shadow-xl border",
+                "bg-white dark:bg-surface-800",
+                "border-surface-200 dark:border-surface-700"
+              )}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <p className="text-xs font-medium text-surface-800 dark:text-surface-200 mb-1">
+                Excluir reunião?
+              </p>
+              <p className="text-[11px] text-surface-400 dark:text-surface-500 mb-3 truncate">
+                {meeting.title}
+              </p>
+              <div className="flex gap-2">
+                <button
+                  onClick={handleCancelDelete}
+                  className="flex-1 py-1 rounded-lg text-xs font-medium text-surface-600 dark:text-surface-400 hover:bg-surface-100 dark:hover:bg-surface-700 transition-colors border border-surface-200 dark:border-surface-600"
+                >
+                  Cancelar
+                </button>
+                <button
+                  onClick={handleConfirmDelete}
+                  className="flex-1 py-1 rounded-lg text-xs font-semibold text-white bg-red-500 hover:bg-red-600 transition-colors"
+                >
+                  Excluir
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Seta */}

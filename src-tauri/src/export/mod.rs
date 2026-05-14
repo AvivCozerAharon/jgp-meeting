@@ -76,19 +76,6 @@ fn format_txt(meeting: &Meeting) -> String {
         out.push('\n');
     }
 
-    // Falantes (Feature 10)
-    if let Some(speakers) = &meeting.speakers {
-        if !speakers.is_empty() {
-            out.push('\n');
-            out.push_str(&format!("{}\n", "-".repeat(60)));
-            out.push_str("FALANTES IDENTIFICADOS\n");
-            out.push_str(&format!("{}\n\n", "-".repeat(60)));
-            for seg in speakers {
-                out.push_str(&format!("[{}]\n{}\n\n", seg.speaker, seg.text));
-            }
-        }
-    }
-
     // Resumo
     if let Some(summary) = &meeting.summary {
         out.push_str(&format!("{}\n", "-".repeat(60)));
@@ -126,16 +113,6 @@ fn format_md(meeting: &Meeting) -> String {
     } else {
         out.push_str(&meeting.transcript);
         out.push_str("\n\n");
-    }
-
-    // Falantes (Feature 10)
-    if let Some(speakers) = &meeting.speakers {
-        if !speakers.is_empty() {
-            out.push_str("## 👥 Falantes Identificados\n\n");
-            for seg in speakers {
-                out.push_str(&format!("**{}:** {}\n\n", seg.speaker, seg.text));
-            }
-        }
     }
 
     // Resumo

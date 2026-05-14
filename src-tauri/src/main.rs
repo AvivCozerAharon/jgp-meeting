@@ -62,6 +62,8 @@ fn main() {
             commands::list_microphones,
             // Teste de microfone (debug)
             commands::test_microphone,
+            // Teste de microfone com transcrição interativa
+            commands::test_mic_with_transcription,
             // Renomear + editar transcrição
             commands::update_meeting_meta,
             commands::update_meeting_segment,

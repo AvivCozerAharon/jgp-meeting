@@ -10,10 +10,17 @@ import { useAudioCapture } from "@/hooks/useAudioCapture";
 import { useTranscription } from "@/hooks/useTranscription";
 import { useDetection } from "@/hooks/useDetection";
 import { AudioIndicator } from "@/components/AudioIndicator";
+import { WaveformBars } from "@/components/WaveformBars";
 import { TranscriptionPanel } from "@/components/TranscriptionPanel";
 import { MeetingTypeSelector } from "@/components/MeetingTypeSelector";
 import { DetectionBanner } from "@/components/DetectionBanner";
 import type { MeetingType } from "@/types";
+
+function formatDuration(s: number): string {
+  const m = Math.floor(s / 60).toString().padStart(2, "0");
+  const sec = Math.floor(s % 60).toString().padStart(2, "0");
+  return `${m}:${sec}`;
+}
 
 interface MainPageProps {
   onMeetingSaved?: (meetingId: string) => void;
@@ -104,9 +111,11 @@ export const MainPage: React.FC<MainPageProps> = ({ onMeetingSaved, onRecordingC
   useEffect(() => {
     let unlisten: (() => void) | null = null;
     listen<string>("recording-stopped", (e) => {
+      // Payload vazio = parou sem salvar (transcrição vazia) — não notifica como reunião salva
       if (e.payload) onMeetingSaved?.(e.payload);
       transcriptionActions.muteUpdates();
       transcriptionActions.clearTranscript();
+      invoke("close_compliance_window").catch(() => {});
     }).then(fn => { unlisten = fn; }).catch(console.error);
     return () => { unlisten?.(); };
   }, [onMeetingSaved, transcriptionActions]);
@@ -128,9 +137,17 @@ export const MainPage: React.FC<MainPageProps> = ({ onMeetingSaved, onRecordingC
             <div className="flex items-center gap-3 px-4 py-2 bg-primary-50 dark:bg-primary-500/10 border border-primary-200 dark:border-primary-500/20 rounded-xl">
               <AudioIndicator isActive level={audioLevel} size="md" />
               <div>
-                <p className="text-xs font-semibold text-primary-700 dark:text-primary-400">Ouvindo...</p>
+                <div className="flex items-center gap-2">
+                  <p className="text-xs font-semibold text-primary-700 dark:text-primary-400">Ouvindo...</p>
+                  <span className={clsx(
+                    "text-xs font-mono font-semibold tabular-nums",
+                    isPaused ? "text-amber-500 dark:text-amber-400" : "text-primary-600 dark:text-primary-400"
+                  )}>
+                    {formatDuration(duration)}
+                  </span>
+                </div>
                 <p className="text-[10px] text-primary-500 dark:text-primary-500/70">
-                  {isProcessing ? "Transcrevendo chunk..." : "Aguardando fala"}
+                  {isPaused ? "Pausado" : isProcessing ? "Transcrevendo chunk..." : "Aguardando fala"}
                 </p>
               </div>
             </div>
@@ -200,10 +217,10 @@ export const MainPage: React.FC<MainPageProps> = ({ onMeetingSaved, onRecordingC
                     "w-3.5 h-3.5",
                     isCapturing ? "text-primary-500" : "text-surface-400 dark:text-surface-600"
                   )} />
-                  <AudioIndicator
-                    isActive={isCapturing}
+                  <WaveformBars
                     level={audioLevel}
-                    size="lg"
+                    isActive={isCapturing}
+                    color="bg-blue-500"
                   />
                 </div>
                 <span className="text-[10px] text-surface-400 dark:text-surface-500 font-mono">
@@ -219,10 +236,10 @@ export const MainPage: React.FC<MainPageProps> = ({ onMeetingSaved, onRecordingC
                       "w-3.5 h-3.5",
                       micMuted ? "text-surface-400 dark:text-surface-600" : "text-blue-500"
                     )} />
-                    <AudioIndicator
-                      isActive={isCapturing && !micMuted}
+                    <WaveformBars
                       level={micMuted ? 0 : micLevel}
-                      size="lg"
+                      isActive={isCapturing && !micMuted}
+                      color="bg-emerald-500"
                     />
                   </div>
                   <span className={clsx(
@@ -314,7 +331,8 @@ export const MainPage: React.FC<MainPageProps> = ({ onMeetingSaved, onRecordingC
       {/* Área de conteúdo: Transcrição */}
       <div className="flex-1 px-6 pb-6 min-h-0 mt-2">
         <TranscriptionPanel
-          transcript={transcript}
+          segments={transcriptionState.segments}
+          meetingId={null}
           isCapturing={isCapturing}
           isProcessing={isProcessing}
           duration={duration}

@@ -146,10 +146,9 @@ async fn call_gpt_inner(
     json_mode: bool,
     endpoint: &str,
 ) -> Result<String> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(90))
-        .build()
-        .context("Falha ao criar cliente HTTP")?;
+    use crate::http_client;
+    
+    let client = http_client::get_long_client();
 
     let mut body = json!({
         "model": model,

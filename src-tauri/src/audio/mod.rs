@@ -62,15 +62,25 @@ impl AudioChunk {
     /// WAV 32-bit float no formato original do dispositivo.
     /// Usado pela API Whisper da OpenAI (aceita qualquer formato).
     pub fn to_wav_bytes(&self) -> Result<Vec<u8>> {
+        let mono_samples: Vec<f32> = if self.channels > 1 {
+            let ch = self.channels as usize;
+            self.samples
+                .chunks_exact(ch)
+                .map(|frame| frame.iter().sum::<f32>() / ch as f32)
+                .collect()
+        } else {
+            self.samples.to_vec()
+        };
+
         let spec = WavSpec {
-            channels: self.channels,
+            channels: 1,
             sample_rate: self.sample_rate,
             bits_per_sample: 32,
             sample_format: SampleFormat::Float,
         };
         let mut cursor = std::io::Cursor::new(Vec::new());
         let mut writer = WavWriter::new(&mut cursor, spec)?;
-        for &s in &self.samples {
+        for &s in &mono_samples {
             writer.write_sample(s)?;
         }
         writer.finalize()?;
@@ -341,9 +351,9 @@ pub fn start_capture(
 ) -> Result<()> {
     use windows::Win32::{
         Media::Audio::{
-            eCapture, eConsole, eRender, IAudioCaptureClient, IAudioClient, IMMDeviceEnumerator,
-            MMDeviceEnumerator, AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK,
-            WAVEFORMATEX,
+            eCapture, eConsole, eRender, IAudioCaptureClient, IAudioClient, IAudioSessionControl2,
+            IMMDeviceEnumerator, MMDeviceEnumerator, AUDCLNT_SHAREMODE_SHARED,
+            AUDCLNT_STREAMFLAGS_LOOPBACK, WAVEFORMATEX,
         },
         System::Com::{
             CoCreateInstance, CoInitializeEx, CoTaskMemFree, CLSCTX_ALL, COINIT_MULTITHREADED,
@@ -465,6 +475,12 @@ pub fn start_capture(
             if let Err(e) = audio_client.Start() {
                 log::error!("Mic thread: Start falhou: {:?}", e);
                 return;
+            }
+
+            // Desativa o "Communications Ducking" do Windows: sem isso o OS reduz
+            // o volume de outros apps em ~80% ao detectar captura de microfone.
+            if let Ok(ctrl2) = audio_client.GetService::<IAudioSessionControl2>() {
+                let _ = ctrl2.SetDuckingPreference(true);
             }
 
             log::info!(
@@ -682,9 +698,14 @@ pub fn start_capture(
                 sys_gain_max
             );
 
-            // ── Loop de captura ───────────────────────────────────────────────
-            let chunk_target = (sample_rate as f32 * channels as f32 * sys_chunk_secs) as usize;
-            let mut pcm_buffer: Vec<f32> = Vec::with_capacity(chunk_target * 2);
+            // ── Loop de captura com SmartChunker ─────────────────────────
+            let chunker_config = chunker::ChunkerConfig {
+                min_chunk_secs: 2.0,
+                max_chunk_secs: sys_chunk_secs.max(15.0),
+                silence_break_secs: 0.7,
+                vad_sensitivity: 0.5,
+            };
+            let mut sys_chunker = chunker::SmartChunker::new(chunker_config, sample_rate, channels);
 
             while state.is_capturing() {
                 let pkt_size = match capture_client.GetNextPacketSize() {
@@ -708,7 +729,6 @@ pub fn start_capture(
                 match capture_client.GetBuffer(&mut p_data, &mut num_frames, &mut flags, None, None)
                 {
                     Ok(()) => {
-                        // ► FIX: checa SILENT antes de acessar p_data
                         let is_silent = (flags & AUDCLNT_BUFFERFLAGS_SILENT) != 0;
 
                         if !is_silent && !p_data.is_null() && num_frames > 0 {
@@ -722,14 +742,38 @@ pub fn start_capture(
                                     let mut lvl = state.current_level.lock();
                                     *lvl = (*lvl * 0.7 + rms * 0.3).min(1.0);
                                 }
-                                pcm_buffer.extend_from_slice(&samples);
+
+                                // SmartChunker: detecta pausas naturais para cortar chunks
+                                if let Some(speech_chunk) = sys_chunker.push(&samples) {
+                                    let mut chunk_data = speech_chunk.samples;
+
+                                    let rms = compute_rms(&chunk_data);
+                                    if rms >= sys_silence {
+                                        if sys_agc {
+                                            apply_auto_gain(&mut chunk_data, sys_gain_max);
+                                        }
+                                        let chunk = AudioChunk {
+                                            samples: chunk_data,
+                                            sample_rate,
+                                            channels,
+                                            duration_secs: speech_chunk.duration_secs,
+                                            source: AudioSource::System,
+                                        };
+                                        if chunk_tx.send(chunk).is_err() {
+                                            log::warn!("Canal fechado, encerrando captura");
+                                            break;
+                                        }
+                                    } else {
+                                        log::debug!(
+                                            "Chunk silencioso (RMS={:.4} < {:.4}), descartado",
+                                            rms,
+                                            sys_silence
+                                        );
+                                    }
+                                }
                             }
-                        } else if num_frames > 0 {
-                            pcm_buffer.extend(
-                                std::iter::repeat(0.0f32)
-                                    .take(num_frames as usize * channels as usize),
-                            );
                         }
+                        // Silent buffers: skip zero-fill to avoid diluting RMS of real speech
 
                         if let Err(e) = capture_client.ReleaseBuffer(num_frames) {
                             log::warn!("ReleaseBuffer: {:?}", e);
@@ -737,61 +781,24 @@ pub fn start_capture(
                     }
                     Err(e) => log::warn!("GetBuffer: {:?}", e),
                 }
-
-                // Envia chunk ao acumular amostras suficientes
-                if pcm_buffer.len() >= chunk_target {
-                    let mut chunk_data: Vec<f32> = pcm_buffer.drain(..chunk_target).collect();
-
-                    // AGC: normaliza volume do loopback antes do silence check
-                    if sys_agc {
-                        apply_auto_gain(&mut chunk_data, sys_gain_max);
-                    }
-
-                    // Feature 1: descarta chunks silenciosos
-                    let rms = compute_rms(&chunk_data);
-                    if rms >= sys_silence {
-                        let chunk = AudioChunk {
-                            samples: chunk_data,
-                            sample_rate,
-                            channels,
-                            duration_secs: sys_chunk_secs,
-                            source: AudioSource::System,
-                        };
-                        if chunk_tx.send(chunk).is_err() {
-                            log::warn!("Canal fechado, encerrando captura");
-                            break;
-                        }
-                    } else {
-                        log::debug!(
-                            "Chunk silencioso (RMS={:.4} < {:.4}), descartado",
-                            rms,
-                            sys_silence
-                        );
-                    }
-                }
             }
 
-            // ── Flush final: envia o que sobrou no pcm_buffer ────────────
-            // Sem esse flush, dados parciais (que não atingiram chunk_target)
-            // seriam perdidos ao parar a gravação.
-            if !pcm_buffer.is_empty() {
-                let remaining_samples = pcm_buffer.len();
+            // ── Flush final: SmartChunker ────────────
+            while let Some(speech_chunk) = sys_chunker.flush() {
+                let mut chunk_data = speech_chunk.samples;
+
                 let actual_duration =
-                    remaining_samples as f32 / (sample_rate as f32 * channels as f32);
-
-                // Só envia se tiver ao menos 0.5s de áudio (evita micro-chunks inúteis)
-                if actual_duration >= 0.5 {
-                    let mut chunk_data = pcm_buffer;
-                    if sys_agc {
-                        apply_auto_gain(&mut chunk_data, sys_gain_max);
-                    }
-
+                    chunk_data.len() as f32 / (sample_rate as f32 * channels as f32);
+                if actual_duration >= 0.3 {
                     let rms = compute_rms(&chunk_data);
                     if rms >= sys_silence {
+                        if sys_agc {
+                            apply_auto_gain(&mut chunk_data, sys_gain_max);
+                        }
                         log::info!(
                             "Flush final: enviando {:.2}s de áudio restante ({} amostras)",
                             actual_duration,
-                            remaining_samples
+                            chunk_data.len()
                         );
                         let chunk = AudioChunk {
                             samples: chunk_data,
@@ -804,11 +811,6 @@ pub fn start_capture(
                     } else {
                         log::debug!("Flush final descartado (silencioso, RMS={:.4})", rms);
                     }
-                } else {
-                    log::debug!(
-                        "Flush final ignorado (muito curto: {:.3}s)",
-                        actual_duration
-                    );
                 }
             }
 

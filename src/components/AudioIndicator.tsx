@@ -40,8 +40,8 @@ export const AudioIndicator: React.FC<AudioIndicatorProps> = ({
     const centerIndex = Math.floor(NUM_BARS / 2);
     const distanceFromCenter = Math.abs(index - centerIndex);
     const baseFactor = 1 - distanceFromCenter * 0.15;
-    const scaledLevel = Math.max(0.2, level * 2);
-    const scaleY = Math.min(1, baseFactor * scaledLevel);
+    const scaledLevel = Math.min(1.0, Math.sqrt(level * 12));
+    const scaleY = Math.min(1, baseFactor * Math.max(0.15, scaledLevel));
     const delays = [0, 100, 200, 100, 0];
 
     return {

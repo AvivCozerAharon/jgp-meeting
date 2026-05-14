@@ -4,7 +4,19 @@
       "Read(//c/Users/acozer/.config/superpowers/worktrees/jgp-meeting/settings-redesign/**)",
       "Bash(npx tsc:*)",
       "Bash(cargo check:*)",
-      "Bash(cargo build:*)"
+      "Bash(cargo build:*)",
+      "Bash(rtk ls *)",
+      "Bash(rtk grep *)",
+      "Bash(rtk cargo *)",
+      "Bash(rtk tsc *)",
+      "Bash(rtk npm *)",
+      "Bash(rtk git *)",
+      "Bash(awk '{print $2}')",
+      "Bash(xargs grep *)",
+      "PowerShell(cargo check *)",
+      "Bash(rtk read *)",
+      "Bash(rtk wc *)",
+      "Bash(npm install *)"
     ]
   }
 }

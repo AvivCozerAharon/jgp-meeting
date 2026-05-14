@@ -7,7 +7,6 @@ import {
   Clock,
   RefreshCw,
   ArrowLeft,
-  FileText,
   Calendar,
   AlertCircle,
   X,
@@ -18,10 +17,9 @@ import {
   Pencil,
   Check,
   Upload,
-  Save,
-  Mic,
-  Volume2,
+  ExternalLink,
 } from "lucide-react";
+import { invoke } from "@tauri-apps/api/core";
 import { useMeetingHistory } from "@/hooks/useMeetingHistory";
 import { MeetingCard } from "@/components/MeetingCard";
 import { SummaryPanel } from "@/components/SummaryPanel";
@@ -31,7 +29,7 @@ import { FollowupEmail } from "@/components/FollowupEmail";
 import { TranscriptQA } from "@/components/TranscriptQA";
 import { JgrcExportModal } from "@/components/JgrcExportModal";
 import { TagPicker } from "@/components/TagPicker";
-import { parseTranscript } from "@/components/TranscriptionPanel";
+import { TranscriptionPanel } from "@/components/TranscriptionPanel";
 import { getSettings, getTags, formatMeetingDate, formatMeetingDuration } from "@/services/storageService";
 import type { Meeting, AppSettings, Tag } from "@/types";
 
@@ -73,6 +71,7 @@ export const HistoryPage: React.FC = () => {
           void meetingId;
           void newIds;
         }}
+        onTagsUpdated={(updated) => setAllTags(updated)}
       />
     );
   }
@@ -215,6 +214,7 @@ interface MeetingDetailViewProps {
   onUpdateMeta: (id: string, title?: string, transcript?: string) => Promise<void>;
   onExportToJgrc: (meetingId: string) => Promise<string>;
   onTagsChange: (meetingId: string, newTagIds: string[]) => void;
+  onTagsUpdated: (tags: Tag[]) => void;
 }
 
 const MeetingDetailView: React.FC<MeetingDetailViewProps> = ({
@@ -228,6 +228,7 @@ const MeetingDetailView: React.FC<MeetingDetailViewProps> = ({
   onUpdateMeta,
   onExportToJgrc: _onExportToJgrc,
   onTagsChange,
+  onTagsUpdated,
 }) => {
   const [tab, setTab] = useState<DetailTab>('summary');
   const [settings, setSettings] = useState<Partial<AppSettings>>({});
@@ -240,17 +241,15 @@ const MeetingDetailView: React.FC<MeetingDetailViewProps> = ({
   const [isSavingTitle, setIsSavingTitle] = useState(false);
   const titleInputRef = useRef<HTMLInputElement>(null);
 
-  const [editingTranscript, setEditingTranscript] = useState(false);
-  const [transcriptValue, setTranscriptValue] = useState(meeting.transcript);
-  const [isSavingTranscript, setIsSavingTranscript] = useState(false);
-
   const [jgrcModalOpen, setJgrcModalOpen] = useState(false);
   const [jgrcStatus, setJgrcStatus] = useState<'idle' | 'success' | 'error'>('idle');
   const [jgrcMessage, setJgrcMessage] = useState<string>('');
+  const [jgrcEventUrl, setJgrcEventUrl] = useState<string | null>(meeting.jgrc_event_url ?? null);
 
   useEffect(() => {
     setTitleValue(meeting.title);
-    setTranscriptValue(meeting.transcript);
+    setJgrcEventUrl(meeting.jgrc_event_url ?? null);
+    setJgrcStatus('idle');
   }, [meeting.id]);
 
   useEffect(() => {
@@ -300,30 +299,20 @@ const MeetingDetailView: React.FC<MeetingDetailViewProps> = ({
     }
   };
 
-  const handleTranscriptSave = async () => {
-    const trimmed = transcriptValue.trim();
-    setIsSavingTranscript(true);
-    try {
-      await onUpdateMeta(meeting.id, undefined, trimmed);
-    } finally {
-      setIsSavingTranscript(false);
-      setEditingTranscript(false);
-    }
-  };
-
-  const handleTranscriptCancel = () => {
-    setTranscriptValue(meeting.transcript);
-    setEditingTranscript(false);
-  };
-
   const handleExportJgrc = () => {
     setJgrcModalOpen(true);
   };
 
-  const handleJgrcExported = (eventId: string) => {
+  const handleJgrcExported = (eventId: string, eventUrl: string) => {
     setJgrcModalOpen(false);
     setJgrcStatus('success');
     setJgrcMessage(`Evento #${eventId} criado no JGRC`);
+    setJgrcEventUrl(eventUrl);
+  };
+
+  const handleOpenJgrc = () => {
+    const url = jgrcEventUrl;
+    if (url) invoke("open_url", { url }).catch(console.error);
   };
 
   const alreadyExported = !!(meeting.jgrc_event_id);
@@ -441,6 +430,16 @@ const MeetingDetailView: React.FC<MeetingDetailViewProps> = ({
                 {jgrcStatus === 'error' && (
                   <span className="text-xs text-red-500 dark:text-red-400 max-w-48 text-right leading-tight">{jgrcMessage}</span>
                 )}
+                {jgrcEventUrl && (
+                  <button
+                    onClick={handleOpenJgrc}
+                    className="flex items-center gap-1 text-xs text-primary-500 hover:text-primary-700 dark:text-primary-400 dark:hover:text-primary-300 transition-colors"
+                    title={jgrcEventUrl}
+                  >
+                    <ExternalLink className="w-3 h-3" />
+                    Abrir no JGRC
+                  </button>
+                )}
               </div>
             )}
             <ExportMenu meetingId={meeting.id} />
@@ -462,89 +461,25 @@ const MeetingDetailView: React.FC<MeetingDetailViewProps> = ({
       {/* Conteúdo: transcrição + painel direito com abas */}
       <div className="flex-1 flex gap-4 p-6 min-h-0">
         {/* Transcrição */}
-        <div className="flex-1 bg-white dark:bg-surface-800/60 border border-surface-100 dark:border-surface-700/50 rounded-2xl shadow-card dark:shadow-none overflow-hidden flex flex-col">
-          <div className="flex items-center gap-2 px-4 py-3 border-b border-surface-100 dark:border-surface-700/50 flex-shrink-0">
-            <FileText className="w-4 h-4 text-surface-400 dark:text-surface-500" />
-            <span className="text-sm font-semibold text-surface-700 dark:text-surface-200">Transcrição</span>
-            <span className="ml-auto text-xs text-surface-400 dark:text-surface-500">
-              {(editingTranscript ? transcriptValue : meeting.transcript)
-                .split(/\s+/)
-                .filter(Boolean).length}{" "}
-              palavras
-            </span>
-
-            {editingTranscript ? (
-              <div className="flex items-center gap-1 ml-2">
-                <button
-                  onClick={handleTranscriptSave}
-                  disabled={isSavingTranscript}
-                  className={clsx(
-                    "flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium",
-                    "bg-primary-600 text-white hover:bg-primary-700 transition-colors",
-                    isSavingTranscript && "opacity-60 cursor-not-allowed"
-                  )}
-                >
-                  {isSavingTranscript ? (
-                    <RefreshCw className="w-3 h-3 animate-spin" />
-                  ) : (
-                    <Save className="w-3 h-3" />
-                  )}
-                  Salvar
-                </button>
-                <button
-                  onClick={handleTranscriptCancel}
-                  disabled={isSavingTranscript}
-                  className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium text-surface-500 dark:text-surface-400 hover:bg-surface-100 dark:hover:bg-surface-700/50 transition-colors"
-                >
-                  <X className="w-3 h-3" />
-                  Cancelar
-                </button>
-              </div>
-            ) : (
-              <button
-                onClick={() => setEditingTranscript(true)}
-                className="flex items-center gap-1 ml-2 px-2 py-1 rounded-lg text-xs font-medium text-surface-400 hover:text-surface-600 dark:hover:text-surface-300 hover:bg-surface-100 dark:hover:bg-surface-700/50 transition-colors"
-                title="Editar transcrição"
-              >
-                <Pencil className="w-3 h-3" />
-                Editar
-              </button>
-            )}
-          </div>
-
-          <div className="flex-1 overflow-y-auto p-4">
-            {editingTranscript ? (
-              <textarea
-                value={transcriptValue}
-                onChange={(e) => setTranscriptValue(e.target.value)}
-                disabled={isSavingTranscript}
-                className={clsx(
-                  "w-full h-full min-h-32 resize-none text-sm leading-relaxed",
-                  "text-surface-700 dark:text-surface-300 font-mono bg-transparent",
-                  "focus:outline-none focus:ring-2 focus:ring-primary-400 rounded-lg p-1",
-                  isSavingTranscript && "opacity-60 cursor-not-allowed"
-                )}
-                placeholder="Nenhuma transcrição disponível. Digite aqui para adicionar..."
-              />
-            ) : meeting.transcript ? (
-              <TranscriptSegments text={meeting.transcript} />
-            ) : (
-              <div className="h-full flex items-center justify-center text-surface-400 dark:text-surface-500 text-sm">
-                Sem transcrição disponível
-              </div>
-            )}
-          </div>
-        </div>
+        <TranscriptionPanel
+          segments={meeting.segments ?? []}
+          legacyTranscript={(!meeting.segments?.length) ? meeting.transcript : undefined}
+          meetingId={meeting.id}
+          isCapturing={false}
+          isProcessing={false}
+          className="flex-1"
+        />
 
         {/* Painel direito: abas */}
         <div className="w-80 flex-shrink-0 flex flex-col gap-3">
           {/* Tags */}
-          <div className="bg-white dark:bg-surface-800/60 border border-surface-100 dark:border-surface-700/50 rounded-xl shadow-card dark:shadow-none px-4 py-2.5 flex-shrink-0 flex items-center gap-2">
+          <div className="bg-white dark:bg-surface-800/60 border border-surface-100 dark:border-surface-700/50 rounded-xl shadow-card dark:shadow-none px-4 py-2.5 flex-shrink-0 flex items-center gap-2 flex-wrap">
             <TagPicker
               meetingId={meeting.id}
               currentTagIds={meeting.tags ?? []}
               allTags={allTags}
               onTagsChange={(newIds) => onTagsChange(meeting.id, newIds)}
+              onTagsUpdated={onTagsUpdated}
             />
           </div>
 
@@ -561,7 +496,7 @@ const MeetingDetailView: React.FC<MeetingDetailViewProps> = ({
               status={summaryStatus}
               error={error}
               onGenerate={() => onGenerateSummary(meeting.id)}
-              canGenerate={!!meeting.transcript}
+              canGenerate={!!(meeting.transcript || meeting.segments?.length)}
               className="flex-1 min-h-0"
             />
           )}
@@ -628,61 +563,6 @@ const TabButton: React.FC<TabButtonProps> = ({ active, onClick, icon, label }) =
     {label}
   </button>
 );
-
-// ─── Transcript Segmentado ────────────────────────────────────────────────────
-
-const TranscriptSegments: React.FC<{ text: string }> = ({ text }) => {
-  const segments = useMemo(() => parseTranscript(text), [text]);
-
-  if (segments.length === 0) return null;
-
-  return (
-    <div className="space-y-2">
-      {segments.map((seg, i) => {
-        if (seg.source === null) {
-          return (
-            <p key={i} className="text-sm leading-relaxed text-surface-700 dark:text-surface-300 whitespace-pre-wrap">
-              {seg.text}
-            </p>
-          );
-        }
-        const isMic = seg.source === "mic";
-        return (
-          <div
-            key={i}
-            className={clsx(
-              "py-2 px-3 rounded-lg",
-              isMic
-                ? "bg-emerald-50/60 dark:bg-emerald-500/5 border-l-2 border-emerald-400 dark:border-emerald-500/40"
-                : "bg-blue-50/60 dark:bg-blue-500/5 border-l-2 border-blue-400 dark:border-blue-500/40"
-            )}
-          >
-            <div className="flex items-center gap-1.5 mb-1">
-              {isMic ? (
-                <>
-                  <Mic className="w-3 h-3 text-emerald-500 dark:text-emerald-400" />
-                  <span className="text-[10px] font-semibold uppercase tracking-wider text-emerald-600 dark:text-emerald-400">
-                    Você
-                  </span>
-                </>
-              ) : (
-                <>
-                  <Volume2 className="w-3 h-3 text-blue-500 dark:text-blue-400" />
-                  <span className="text-[10px] font-semibold uppercase tracking-wider text-blue-600 dark:text-blue-400">
-                    Reunião
-                  </span>
-                </>
-              )}
-            </div>
-            <p className="text-sm leading-relaxed text-surface-700 dark:text-surface-300 whitespace-pre-wrap">
-              {seg.text}
-            </p>
-          </div>
-        );
-      })}
-    </div>
-  );
-};
 
 // ─── Estado Vazio ──────────────────────────────────────────────────────────────
 

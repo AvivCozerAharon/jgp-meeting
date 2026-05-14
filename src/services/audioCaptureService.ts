@@ -112,3 +112,28 @@ export function formatDuration(seconds: number): string {
   if (h > 0) return `${h}h ${m}min ${s}s`;
   return `${m}min ${s}s`;
 }
+
+// ─── Mic Tuner ───────────────────────────────────────────────────────────────
+
+export interface MicTestResult {
+  status: string;
+  transcript: string;
+  avg_rms: string;
+  peak: string;
+  quality: "good" | "low" | "high" | "no_speech";
+  message: string;
+}
+
+export async function testMicWithTranscription(durationSecs?: number): Promise<MicTestResult> {
+  return await invoke<MicTestResult>("test_mic_with_transcription", {
+    durationSecs: durationSecs ?? null,
+  });
+}
+
+export async function onMicTestLevel(
+  callback: (level: number) => void
+): Promise<UnlistenFn> {
+  return listen<number>("mic-test-level", (event) => {
+    callback(event.payload);
+  });
+}

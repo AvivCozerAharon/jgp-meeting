@@ -83,8 +83,10 @@ export function useAudioCapture(): [AudioCaptureState, AudioCaptureActions] {
         if (isMounted) {
           setIsCapturing(false);
           setAudioLevel(0);
+          setMicLevel(0);
           setIsProcessing(false);
-          setLastMeetingId(e.payload);
+          // Payload vazio = parou sem salvar (ex: transcrição vazia)
+          if (e.payload) setLastMeetingId(e.payload);
           setIsPaused(false);
         }
       });
