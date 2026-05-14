@@ -2085,7 +2085,7 @@ pub async fn open_compliance_window(app: AppHandle) -> Result<(), String> {
     // main.tsx renders <ComplianceOverlay> when window.location.hash === "#compliance"
     WebviewWindowBuilder::new(&app, "compliance", WebviewUrl::App("index.html#compliance".into()))
         .title("")
-        .inner_size(280.0, 64.0)
+        .inner_size(340.0, 64.0)
         .resizable(false)
         .decorations(false)
         .always_on_top(true)
