@@ -618,6 +618,8 @@ pub async fn stop_capture(
         .unwrap_or(0);
 
     if meeting.transcript.trim().is_empty() {
+        // Notifica o main window mesmo sem salvar (payload vazio = sem reunião)
+        let _ = app.emit("recording-stopped", "");
         return Err("Nenhuma fala foi capturada.".to_string());
     }
 
@@ -665,6 +667,8 @@ pub async fn stop_capture(
         }
     }
 
+    // Notifica todas as janelas (main window inclusa) que a gravação parou
+    let _ = app.emit("recording-stopped", &id);
     log::info!("Reunião {id} salva");
     Ok(id)
 }
