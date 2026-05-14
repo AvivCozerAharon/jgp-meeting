@@ -1,5 +1,6 @@
 /// commands.rs
 /// Comandos Tauri expostos ao frontend React via invoke().
+use std::io::Write;
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::Instant;
@@ -45,6 +46,58 @@ fn is_known_filler(text: &str) -> bool {
         | "uh" | "uh huh" | "hum" | "hm" | "aham" | "ei" | "opa"
         | "tchau tchau" | "tchau, tchau!" | "é. é." | "é. é. é."
     )
+}
+
+fn is_whisper_hallucination(text: &str, source: &AudioSource) -> bool {
+    let lower = text.to_lowercase();
+    let words: Vec<&str> = lower.split_whitespace().collect();
+
+    if *source == AudioSource::Microphone && words.len() < 4 {
+        return true;
+    }
+
+    let full = lower.as_str();
+
+    let hallucination_patterns: &[&str] = &[
+        "inscrever no canal",
+        "ativar as notificac",
+        "se inscreva",
+        "obrigado por assistir",
+        "thanks for watching",
+        "subscribe to the channel",
+        "don't forget to subscribe",
+        "like and subscribe",
+        "smash the like button",
+        "leave a comment",
+        "click the link",
+        "check out the description",
+        "follow me on",
+        "background music",
+        "no copyright",
+        "royalty free",
+        "(applause)",
+        "(laughter)",
+        "(music)",
+        "sponsored by",
+        "vou me despedir",
+        "ate o proximo video",
+        "nos vemos no proximo",
+        "obrigado pela atencao",
+        "muito obrigado a todos",
+        "esse video foi",
+        "esse e o meu canal",
+    ];
+
+    if hallucination_patterns.iter().any(|p| full.contains(p)) {
+        return true;
+    }
+
+    let unique_words: std::collections::HashSet<&str> = words.iter().copied().collect();
+    if words.len() > 0 && (unique_words.len() as f64 / words.len() as f64) < 0.5 {
+        return true;
+    }
+
+    false
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -282,8 +335,10 @@ pub async fn start_capture(
 
             let got_text = match result {
                 Ok(text) if !text.is_empty() => {
-                    // Filtro: descarta transcrições muito curtas/filler do microfone
-                    // Isso evita que ruído amplificado pelo AGC vire "É.", "Tchau!", etc.
+                    if is_whisper_hallucination(&text, &chunk.source) {
+                        log::debug!("Hallucination descartado: {:?}", &text[..text.len().min(60)]);
+                        false
+                    } else {
                     let is_filler = chunk.source == AudioSource::Microphone && {
                         let trimmed = text.trim();
                         let len = trimmed.chars().count();
@@ -332,17 +387,32 @@ pub async fn start_capture(
                             return false;
                         }
 
-                        // Insert sorted by timestamp_ms and derive flat transcript in one lock scope
+                        // Insert sorted by timestamp and update transcript incrementally
                         let flat: String = {
                             let mut segs = app_state.segments.lock();
                             let pos = segs.partition_point(|s| s.timestamp_ms <= timestamp_ms);
                             segs.insert(pos, segment.clone());
-                            segs.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join(" ")
+
+                            let current = app_state.transcript.load();
+                            let current_str = current.as_ref();
+
+                            if segs.len() == 1 {
+                                segment.text.clone()
+                            } else if pos == 0 {
+                                format!("{} {}", segment.text, current_str)
+                            } else if pos >= segs.len() - 1 {
+                                format!("{} {}", current_str, segment.text)
+                            } else {
+                                let before: String = segs[..pos].iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join(" ");
+                                let after: String = segs[pos+1..].iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join(" ");
+                                format!("{} {} {}", before, segment.text, after)
+                            }
                         };
                         app_state.transcript.store(Arc::new(flat));
 
                         let _ = app.emit("transcription-update", &segment);
                         true
+                    }
                     }
                 }
                 Ok(_) => {
@@ -709,6 +779,215 @@ pub async fn test_microphone(
             avg_rms, peak, settings.mic_silence_threshold, recommendation
         ),
     }))
+}
+
+/// Testa o microfone com transcrição real usando as configurações atuais.
+/// Captura áudio do mic, transcreve via Whisper e retorna o resultado
+/// com indicador de qualidade. Emite eventos `mic-test-level` durante a gravação.
+#[tauri::command]
+pub async fn test_mic_with_transcription(
+    app: AppHandle,
+    duration_secs: Option<u64>,
+) -> Result<serde_json::Value, String> {
+    use std::sync::atomic::Ordering;
+
+    let settings = storage::load_settings().map_err(|e| format!("Erro ao carregar configuracoes: {e}"))?;
+
+    if settings.transcription_provider == "openai" && settings.openai_api_key.is_empty() {
+        return Err("Chave da API OpenAI nao configurada.".into());
+    }
+    if settings.transcription_provider == "groq" && settings.groq_api_key.is_empty() {
+        return Err("Chave da API Groq nao configurada.".into());
+    }
+
+    let capture_state = Arc::new(AudioCaptureState::new());
+    capture_state.is_capturing.store(true, std::sync::atomic::Ordering::SeqCst);
+    let (chunk_tx, chunk_rx) = mpsc::channel::<AudioChunk>();
+
+    let mic_config = audio::MicConfig {
+        enabled: true,
+        device_id: settings.selected_microphone.clone(),
+        silence_threshold: settings.mic_silence_threshold,
+        auto_gain: settings.mic_auto_gain,
+        gain_max: settings.mic_gain_max,
+    };
+
+    audio::start_capture(
+        Arc::clone(&capture_state),
+        chunk_tx,
+        audio::SystemConfig {
+            chunk_duration_secs: settings.chunk_duration_secs,
+            silence_threshold: 0.0,
+            auto_gain: false,
+            gain_max: 1.0,
+        },
+        mic_config,
+    )
+    .map_err(|e| format!("Erro ao iniciar captura: {e}"))?;
+
+    let secs = duration_secs.unwrap_or(5);
+
+    let cap_emit = Arc::clone(&capture_state);
+    let app_emit = app.clone();
+    let level_handle = tokio::spawn(async move {
+        while cap_emit.is_capturing() {
+            let level = *cap_emit.mic_level.lock();
+            let _ = app_emit.emit("mic-test-level", level);
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    });
+
+    tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
+    capture_state.is_capturing.store(false, Ordering::SeqCst);
+    let _ = level_handle.await;
+
+    let mut all_samples: Vec<f32> = Vec::new();
+    let mut rms_values: Vec<f32> = Vec::new();
+    let mut peak: f32 = 0.0;
+    let mut sample_rate: u32 = 48000;
+    let mut channels: u16 = 1;
+
+    while let Ok(chunk) = chunk_rx.try_recv() {
+        if chunk.source == AudioSource::Microphone {
+            if !chunk.samples.is_empty() {
+                sample_rate = chunk.sample_rate;
+                channels = chunk.channels;
+                let rms = (chunk.samples.iter().map(|s| s * s).sum::<f32>() / chunk.samples.len() as f32).sqrt();
+                let chunk_peak = chunk.samples.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+                rms_values.push(rms);
+                peak = peak.max(chunk_peak);
+                all_samples.extend_from_slice(&chunk.samples);
+            }
+        }
+    }
+
+    if all_samples.is_empty() {
+        return Ok(serde_json::json!({
+            "status": "no_data",
+            "transcript": "",
+            "avg_rms": "0.0000",
+            "peak": "0.0000",
+            "quality": "no_speech",
+            "message": "Nenhum audio capturado. Verifique se o microfone esta funcionando."
+        }));
+    }
+
+    let avg_rms = if rms_values.is_empty() {
+        0.0
+    } else {
+        rms_values.iter().sum::<f32>() / rms_values.len() as f32
+    };
+
+    let wav_bytes = build_wav_from_samples(&all_samples, sample_rate, channels)
+        .map_err(|e| format!("Erro ao gerar WAV: {e}"))?;
+
+    let glossary_part: Option<String> = {
+        let terms: Vec<&str> = settings.whisper_glossary
+            .split([',', '\n'])
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .collect();
+        if terms.is_empty() { None } else { Some(terms.join(", ")) }
+    };
+    let effective_prompt = match (glossary_part, settings.whisper_prompt.is_empty()) {
+        (None, true) => None,
+        (None, false) => Some(settings.whisper_prompt.clone()),
+        (Some(g), true) => Some(g),
+        (Some(g), false) => Some(format!("{} {}", g, settings.whisper_prompt)),
+    };
+    let prompt_opt = effective_prompt.as_deref();
+
+    let lang = if settings.transcription_language.is_empty() {
+        None
+    } else {
+        Some(settings.transcription_language.as_str())
+    };
+
+    let result = match settings.transcription_provider.as_str() {
+        "groq" => {
+            transcription::transcribe_groq(
+                wav_bytes,
+                &settings.groq_api_key,
+                lang,
+                prompt_opt,
+            ).await
+        }
+        _ => {
+            transcription::transcribe_audio(
+                wav_bytes,
+                &settings.openai_api_key,
+                lang,
+                prompt_opt,
+            ).await
+        }
+    };
+
+    let transcript = match result {
+        Ok(text) => text.trim().to_string(),
+        Err(e) => {
+            return Ok(serde_json::json!({
+                "status": "error",
+                "transcript": "",
+                "avg_rms": format!("{:.4}", avg_rms),
+                "peak": format!("{:.4}", peak),
+                "quality": "no_speech",
+                "message": format!("Erro na transcricao: {}", e)
+            }));
+        }
+    };
+
+    let quality = if transcript.is_empty() || transcript.len() < 5 {
+        "no_speech"
+    } else if avg_rms < 0.003 {
+        "low"
+    } else if avg_rms > 0.1 {
+        "high"
+    } else {
+        "good"
+    };
+
+    let message = match quality {
+        "good" => "Transcricao capturou a fala corretamente.",
+        "low" => "Volume baixo — a transcricao pode estar fraca. Tente aumentar o ganho.",
+        "high" => "Volume alto — pode haver saturacao. Reduza o ganho.",
+        _ => "Nenhuma fala detectada. Fale mais perto ou mais alto.",
+    };
+
+    Ok(serde_json::json!({
+        "status": "ok",
+        "transcript": transcript,
+        "avg_rms": format!("{:.4}", avg_rms),
+        "peak": format!("{:.4}", peak),
+        "quality": quality,
+        "message": message
+    }))
+}
+
+fn build_wav_from_samples(samples: &[f32], sample_rate: u32, channels: u16) -> anyhow::Result<Vec<u8>> {
+    use hound::{WavSpec, WavWriter, SampleFormat};
+
+    let mono_samples: Vec<f32> = if channels > 1 {
+        samples
+            .chunks_exact(channels as usize)
+            .map(|ch| ch.iter().sum::<f32>() / ch.len() as f32)
+            .collect()
+    } else {
+        samples.to_vec()
+    };
+
+    let spec = WavSpec {
+        channels: 1,
+        sample_rate,
+        bits_per_sample: 32,
+        sample_format: SampleFormat::Float,
+    };
+    let mut cursor = std::io::Cursor::new(Vec::new());
+    let mut writer = WavWriter::new(&mut cursor, spec)?;
+    for &s in &mono_samples {
+        writer.write_sample(s)?;
+    }
+    writer.finalize()?;
+    Ok(cursor.into_inner())
 }
 
 /// Muta ou desmuta o microfone durante a gravação.
@@ -1168,6 +1447,13 @@ pub async fn jgrc_get_export_data() -> Result<JgrcExportData, String> {
     })
 }
 
+/// Resultado da exportação para o JGRC.
+#[derive(serde::Serialize)]
+pub struct JgrcExportResult {
+    pub event_id: String,
+    pub event_url: String,
+}
+
 /// Exporta uma reunião para o JGRC criando um novo evento.
 ///
 /// Usa o endpoint `/api/create_event` do JGRC que:
@@ -1180,12 +1466,14 @@ pub async fn export_to_jgrc(
     event_type_id: Option<String>,
     responsible_id: Option<String>,
     subject: Option<String>,
+    content: Option<String>,
     actions: Option<String>,
     manager_id: Option<String>,
     attendees: Option<String>,
     internal_attendee_ids: Option<Vec<String>>,
     city_id: Option<String>,
-) -> Result<String, String> {
+    company: Option<String>,
+) -> Result<JgrcExportResult, String> {
     let meeting =
         storage::load_meeting(&meeting_id).map_err(|e| format!("Reunião não encontrada: {e}"))?;
 
@@ -1203,7 +1491,9 @@ pub async fn export_to_jgrc(
         return Err("Não conectado ao JGRC. Faça login na aba Integração JGRC.".to_string());
     }
 
-    let content = build_jgrc_content(&meeting);
+    let content = content
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| build_jgrc_content(&meeting));
     let event_date = meeting.started_at.format("%Y-%m-%d").to_string();
 
     let client = reqwest::Client::builder()
@@ -1256,6 +1546,11 @@ pub async fn export_to_jgrc(
             }
         }
     }
+    let company_id = match company.as_deref() {
+        Some("regia") => "1",
+        _ => "0",
+    };
+    form.push(("event[company_id]".into(), company_id.into()));
 
     // ── POST /api/create_event ───────────────────────────────────────────────
     let response = client
@@ -1298,12 +1593,14 @@ pub async fn export_to_jgrc(
         "criado".to_string()
     };
 
+    let event_url = format!("{base_url}/events/{event_id}");
     let mut meeting_mut = meeting;
     meeting_mut.jgrc_event_id = Some(event_id.clone());
+    meeting_mut.jgrc_event_url = Some(event_url.clone());
     storage::save_meeting(&meeting_mut).map_err(|e| format!("Erro ao salvar: {e}"))?;
 
-    log::info!("Reunião '{}' exportada para JGRC (event_id={})", meeting_mut.title, event_id);
-    Ok(event_id)
+    log::info!("Reunião '{}' exportada para JGRC (event_id={}, url={})", meeting_mut.title, event_id, event_url);
+    Ok(JgrcExportResult { event_id, event_url })
 }
 
 /// Monta o conteúdo HTML para o campo `content` do JGRC a partir dos dados da reunião.
@@ -1788,7 +2085,7 @@ pub async fn open_compliance_window(app: AppHandle) -> Result<(), String> {
     // main.tsx renders <ComplianceOverlay> when window.location.hash === "#compliance"
     WebviewWindowBuilder::new(&app, "compliance", WebviewUrl::App("index.html#compliance".into()))
         .title("")
-        .inner_size(340.0, 72.0)
+        .inner_size(260.0, 44.0)
         .resizable(false)
         .decorations(false)
         .always_on_top(true)
