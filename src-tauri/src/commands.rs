@@ -599,17 +599,23 @@ pub async fn start_capture(
         // Re-salva a reunião com a transcrição completa (incluindo chunks drenados)
         let app_state = app_clone.state::<AppState>();
         if let Some(meeting_id) = app_state.draining_meeting_id.lock().take() {
-            let final_segs: Vec<storage::TranscriptSegment> = app_state.segments.lock().clone();
+            let mut final_segs: Vec<storage::TranscriptSegment> = app_state.segments.lock().clone();
+            // Ordena por timestamp para garantir ordem correta independente de chegada
+            final_segs.sort_by_key(|s| s.timestamp_ms);
             let final_transcript: String = final_segs.iter()
                 .map(|s| s.text.as_str())
                 .collect::<Vec<_>>()
                 .join(" ");
             if let Ok(mut meeting) = storage::load_meeting(&meeting_id) {
-                if meeting.transcript.len() < final_transcript.len() {
+                if !final_segs.is_empty() {
                     meeting.transcript = final_transcript;
-                    meeting.segments = if final_segs.is_empty() { None } else { Some(final_segs) };
+                    meeting.segments = Some(final_segs);
                     if let Err(e) = storage::save_meeting(&meeting) {
                         log::error!("Erro ao re-salvar reunião após draining: {e}");
+                        let _ = app_clone.emit("draining-failed", serde_json::json!({
+                            "meeting_id": meeting_id,
+                            "error": e.to_string()
+                        }));
                     } else {
                         log::info!("Reunião {meeting_id} atualizada ({} segmentos)",
                             meeting.segments.as_ref().map(|s| s.len()).unwrap_or(0));
@@ -679,9 +685,12 @@ pub async fn stop_capture(
         .unwrap_or(0);
 
     if meeting.transcript.trim().is_empty() {
-        // Notifica o main window mesmo sem salvar (payload vazio = sem reunião)
+        // Fecha compliance window e notifica sem salvar (payload vazio = sem reunião)
+        if let Some(window) = app.get_webview_window("compliance") {
+            let _ = window.close();
+        }
         let _ = app.emit("recording-stopped", "");
-        return Err("Nenhuma fala foi capturada.".to_string());
+        return Err("Nenhuma fala foi detectada nesta gravação. A reunião não foi salva.".to_string());
     }
 
     let id = meeting.id.clone();
@@ -726,6 +735,11 @@ pub async fn stop_capture(
                 }
             });
         }
+    }
+
+    // Fecha a janela de conformidade do backend (evita race com close no frontend)
+    if let Some(window) = app.get_webview_window("compliance") {
+        let _ = window.close();
     }
 
     // Notifica todas as janelas (main window inclusa) que a gravação parou

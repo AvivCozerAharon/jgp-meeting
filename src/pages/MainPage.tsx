@@ -93,17 +93,17 @@ export const MainPage: React.FC<MainPageProps> = ({ onMeetingSaved, onRecordingC
   }, [isCapturing, captureActions]);
 
   const handleStart = useCallback(async () => {
-    transcriptionActions.unmuteUpdates();
-    transcriptionActions.clearTranscript();
     await captureActions.start(meetingType);
+    transcriptionActions.clearTranscript();
+    transcriptionActions.unmuteUpdates();
     invoke("open_compliance_window").catch(console.error);
   }, [captureActions, transcriptionActions, meetingType]);
 
   const handleStop = useCallback(async () => {
-    invoke("close_compliance_window").catch(console.error);
     // Apenas chama stop — o cleanup (muteUpdates, clearTranscript, onMeetingSaved)
     // é feito pelo listener de "recording-stopped" abaixo, o que cobre tanto
     // o stop pelo botão principal quanto pelo compliance overlay.
+    // O backend fecha a janela de conformidade diretamente em stop_capture.
     await captureActions.stop();
   }, [captureActions]);
 
@@ -115,7 +115,6 @@ export const MainPage: React.FC<MainPageProps> = ({ onMeetingSaved, onRecordingC
       if (e.payload) onMeetingSaved?.(e.payload);
       transcriptionActions.muteUpdates();
       transcriptionActions.clearTranscript();
-      invoke("close_compliance_window").catch(() => {});
     }).then(fn => { unlisten = fn; }).catch(console.error);
     return () => { unlisten?.(); };
   }, [onMeetingSaved, transcriptionActions]);
@@ -134,7 +133,7 @@ export const MainPage: React.FC<MainPageProps> = ({ onMeetingSaved, onRecordingC
 
           {/* Indicador de status (só durante gravação) */}
           {isCapturing && (
-            <div className="flex items-center gap-3 px-4 py-2 bg-primary-50 dark:bg-primary-500/10 border border-primary-200 dark:border-primary-500/20 rounded-xl">
+            <div className="flex items-center gap-3 px-4 py-2 bg-primary-50 dark:bg-primary-500/10 border border-primary-200 dark:border-primary-500/20 rounded-xl" aria-live="polite" aria-label="Status de gravação">
               <AudioIndicator isActive level={audioLevel} size="md" />
               <div>
                 <div className="flex items-center gap-2">
@@ -210,36 +209,38 @@ export const MainPage: React.FC<MainPageProps> = ({ onMeetingSaved, onRecordingC
             </button>
 
             {/* Indicadores de áudio: sistema + microfone */}
-            <div className="flex items-center gap-4">
+            <div className="flex items-center gap-4" role="group" aria-label="Indicadores de nível de áudio">
               <div className="flex flex-col items-center gap-1">
-                <div className="flex items-center gap-1.5">
+                <div className="flex items-center gap-1.5" aria-label={isCapturing ? `Áudio do sistema ativo` : "Áudio do sistema inativo"}>
                   <Volume2 className={clsx(
                     "w-3.5 h-3.5",
                     isCapturing ? "text-primary-500" : "text-surface-400 dark:text-surface-600"
-                  )} />
+                  )} aria-hidden="true" />
                   <WaveformBars
                     level={audioLevel}
                     isActive={isCapturing}
                     color="bg-blue-500"
+                    aria-label="Nível do áudio do sistema"
                   />
                 </div>
-                <span className="text-[10px] text-surface-400 dark:text-surface-500 font-mono">
+                <span className="text-[10px] text-surface-400 dark:text-surface-500 font-mono" aria-hidden="true">
                   {isCapturing ? "Sistema" : "Inativo"}
                 </span>
               </div>
 
               {/* Indicador de microfone (aparece quando mic está captando) */}
               {isCapturing && micActive && (
-                <div className="flex flex-col items-center gap-1 animate-fade-in">
+                <div className="flex flex-col items-center gap-1 animate-fade-in" aria-label={micMuted ? "Microfone silenciado" : "Microfone ativo"}>
                   <div className="flex items-center gap-1.5">
                     <Mic className={clsx(
                       "w-3.5 h-3.5",
                       micMuted ? "text-surface-400 dark:text-surface-600" : "text-blue-500"
-                    )} />
+                    )} aria-hidden="true" />
                     <WaveformBars
                       level={micMuted ? 0 : micLevel}
                       isActive={isCapturing && !micMuted}
                       color="bg-emerald-500"
+                      aria-label="Nível do microfone"
                     />
                   </div>
                   <span className={clsx(
@@ -247,7 +248,7 @@ export const MainPage: React.FC<MainPageProps> = ({ onMeetingSaved, onRecordingC
                     micMuted
                       ? "text-surface-400 dark:text-surface-600 line-through"
                       : "text-blue-400 dark:text-blue-500"
-                  )}>
+                  )} aria-hidden="true">
                     Microfone
                   </span>
                 </div>
