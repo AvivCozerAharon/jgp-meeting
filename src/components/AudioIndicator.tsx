@@ -2,8 +2,9 @@
 // Indicador visual de áudio: exibe barras animadas quando o app está
 // capturando áudio, com altura proporcional ao nível de áudio atual.
 
-import React from "react";
+import React, { useState } from "react";
 import clsx from "clsx";
+import { Mic } from "lucide-react";
 
 interface AudioIndicatorProps {
   isActive: boolean;
@@ -77,6 +78,7 @@ export const AudioIndicator: React.FC<AudioIndicatorProps> = ({
           }}
         />
       ))}
+      {isActive && <MicHealthBadge level={level} />}
     </div>
   );
 };
@@ -97,3 +99,40 @@ export const RecordingDot: React.FC<{ isActive: boolean; className?: string }> =
     />
   </div>
 );
+
+function MicHealthBadge({ level }: { level: number }) {
+  const [tooltipVisible, setTooltipVisible] = useState(false);
+
+  let color: string;
+  let tooltip: string | null;
+
+  if (level < 0.04) {
+    color = "text-yellow-500";
+    tooltip = "Microfone muito baixo";
+  } else if (level > 0.7) {
+    color = "text-red-500";
+    tooltip = "Microfone muito alto";
+  } else {
+    color = "text-emerald-500";
+    tooltip = null;
+  }
+
+  return (
+    <div className="relative flex items-center">
+      <button
+        type="button"
+        className={clsx("p-0.5 rounded transition-colors", color)}
+        onMouseEnter={() => setTooltipVisible(true)}
+        onMouseLeave={() => setTooltipVisible(false)}
+        aria-label={tooltip ?? "Microfone ideal"}
+      >
+        <Mic className="w-3 h-3" />
+      </button>
+      {tooltipVisible && tooltip && (
+        <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1 px-2 py-1 text-[10px] font-medium bg-surface-800 dark:bg-surface-100 text-white dark:text-surface-900 rounded-lg whitespace-nowrap shadow-lg pointer-events-none">
+          {tooltip}
+        </span>
+      )}
+    </div>
+  );
+}
