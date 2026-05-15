@@ -58,7 +58,7 @@ interface TranscriptionPanelProps {
   /** Meeting ID — necessário para persistir edições. Null durante gravação ao vivo. */
   meetingId?: string | null;
   isCapturing: boolean;
-  isProcessing: boolean;
+  processingSource?: "mic" | "system" | null;
   duration?: number;
   className?: string;
 }
@@ -78,6 +78,7 @@ interface SegmentRowProps {
   isCapturing: boolean;
   meetingId: string | null | undefined;
   showSimultaneousMarker: boolean;
+  processingSource: "mic" | "system" | null;
 }
 
 const SegmentRow: React.FC<SegmentRowProps> = ({
@@ -87,6 +88,7 @@ const SegmentRow: React.FC<SegmentRowProps> = ({
   isCapturing,
   meetingId,
   showSimultaneousMarker,
+  processingSource,
 }) => {
   const [editing, setEditing] = useState(false);
   const [editText, setEditText] = useState(segment.text);
@@ -154,11 +156,15 @@ const SegmentRow: React.FC<SegmentRowProps> = ({
       )}
       <div
         className={clsx(
-          "py-2 px-3 rounded-lg group",
+          "py-2 px-3 rounded-lg group transition-shadow duration-150",
           !isCapturing && "cursor-text hover:ring-1 hover:ring-surface-200 dark:hover:ring-surface-700",
           isMic
             ? "bg-emerald-50/60 dark:bg-emerald-500/5 border-l-2 border-emerald-400 dark:border-emerald-500/40"
-            : "bg-blue-50/60 dark:bg-blue-500/5 border-l-2 border-blue-400 dark:border-blue-500/40"
+            : "bg-blue-50/60 dark:bg-blue-500/5 border-l-2 border-blue-400 dark:border-blue-500/40",
+          isLast && processingSource === "mic" && segment.source === "mic" &&
+            "ring-1 ring-emerald-400/50 dark:ring-emerald-500/30 animate-pulse-slow",
+          isLast && processingSource === "system" && segment.source === "system" &&
+            "ring-1 ring-blue-400/50 dark:ring-blue-500/30 animate-pulse-slow",
         )}
         onClick={handleClick}
       >
@@ -208,7 +214,7 @@ export const TranscriptionPanel: React.FC<TranscriptionPanelProps> = ({
   legacyTranscript,
   meetingId,
   isCapturing,
-  isProcessing,
+  processingSource = null,
   duration = 0,
   className,
 }) => {
@@ -272,7 +278,7 @@ export const TranscriptionPanel: React.FC<TranscriptionPanelProps> = ({
           )}
         </div>
         <div className="flex items-center gap-2">
-          {isProcessing && <ProcessingBadge />}
+          {processingSource && <ProcessingBadge />}
           {!isEmpty && (
             <button
               onClick={handleCopy}
@@ -332,6 +338,7 @@ export const TranscriptionPanel: React.FC<TranscriptionPanelProps> = ({
                   isCapturing={isCapturing}
                   meetingId={meetingId}
                   showSimultaneousMarker={showSimultaneous}
+                  processingSource={processingSource}
                 />
               );
             })}

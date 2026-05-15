@@ -466,7 +466,7 @@ const MeetingDetailView: React.FC<MeetingDetailViewProps> = ({
           legacyTranscript={(!meeting.segments?.length) ? meeting.transcript : undefined}
           meetingId={meeting.id}
           isCapturing={false}
-          isProcessing={false}
+          processingSource={null}
           className="flex-1"
         />
 

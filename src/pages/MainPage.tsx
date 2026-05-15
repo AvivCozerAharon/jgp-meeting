@@ -35,7 +35,7 @@ export const MainPage: React.FC<MainPageProps> = ({ onMeetingSaved, onRecordingC
   const [meetingType, setMeetingType] = useState<MeetingType>('general');
   const [micActive, setMicActive] = useState(false);
 
-  const { isCapturing, audioLevel, micLevel, micMuted, isProcessing, error, duration, isPaused } = captureState;
+  const { isCapturing, audioLevel, micLevel, micMuted, processingSource, error, duration, isPaused } = captureState;
 
   // Reporta estado de gravação ao App.tsx (para o indicador na Navigation)
   useEffect(() => {
@@ -147,7 +147,7 @@ export const MainPage: React.FC<MainPageProps> = ({ onMeetingSaved, onRecordingC
                   </span>
                 </div>
                 <p className="text-[10px] text-primary-500 dark:text-primary-500/70">
-                  {isPaused ? "Pausado" : isProcessing ? "Transcrevendo chunk..." : "Aguardando fala"}
+                  {isPaused ? "Pausado" : processingSource ? "Transcrevendo chunk..." : "Aguardando fala"}
                 </p>
               </div>
             </div>
@@ -334,7 +334,7 @@ export const MainPage: React.FC<MainPageProps> = ({ onMeetingSaved, onRecordingC
           segments={transcriptionState.segments}
           meetingId={null}
           isCapturing={isCapturing}
-          isProcessing={isProcessing}
+          processingSource={processingSource}
           duration={duration}
           className="h-full"
         />
