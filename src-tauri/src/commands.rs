@@ -446,10 +446,21 @@ pub async fn start_capture(
                         continue;
                     }
                     let chunk_recv_ms = recording_start.elapsed().as_millis() as u64;
-                    let permit = Arc::clone(&transcription_sem)
-                        .acquire_owned()
-                        .await
-                        .expect("Semaphore closed");
+                    let permit = tokio::select! {
+                        p = Arc::clone(&transcription_sem).acquire_owned() => {
+                            p.expect("Semaphore closed")
+                        }
+                        _ = async {
+                            loop {
+                                if !app_clone.state::<AppState>().capture_state.is_capturing
+                                    .load(std::sync::atomic::Ordering::SeqCst)
+                                {
+                                    break;
+                                }
+                                tokio::task::yield_now().await;
+                            }
+                        } => break,
+                    };
                     let app2      = app_clone.clone();
                     let provider2 = provider_str.clone();
                     let lang2     = language.clone();
@@ -480,7 +491,7 @@ pub async fn start_capture(
         // Usamos recv_timeout com limite para não travar infinitamente.
         let mut pre_drain: Vec<AudioChunk> = Vec::new();
         loop {
-            match chunk_rx.recv_timeout(std::time::Duration::from_secs(5)) {
+            match chunk_rx.recv_timeout(std::time::Duration::from_secs(15)) {
                 Ok(chunk) => {
                     // Chunk recebido enquanto esperava a thread de áudio encerrar
                     pre_drain.push(chunk);
