@@ -432,6 +432,8 @@ pub async fn start_capture(
 
         // ── Fase 1: Processamento normal (durante gravação ativa) ────────
         // Processa chunks conforme chegam, checando stop signal a cada iteração.
+        // Declared here so chunks dequeued at the moment of stop are not dropped.
+        let mut pre_drain: Vec<AudioChunk> = Vec::new();
         loop {
             // Verifica sinal de stop (sem bloquear)
             if stop_rx.try_recv().is_ok() {
@@ -459,7 +461,10 @@ pub async fn start_capture(
                                 }
                                 tokio::task::yield_now().await;
                             }
-                        } => break,
+                        } => {
+                            pre_drain.push(chunk);
+                            break;
+                        }
                     };
                     let app2      = app_clone.clone();
                     let provider2 = provider_str.clone();
@@ -489,7 +494,8 @@ pub async fn start_capture(
         // A thread de áudio precisa de tempo para fazer o flush do pcm_buffer
         // restante. Aguardamos o canal desconectar (chunk_tx dropped = thread saiu).
         // Usamos recv_timeout com limite para não travar infinitamente.
-        let mut pre_drain: Vec<AudioChunk> = Vec::new();
+        // Note: pre_drain was declared before Phase 1 to capture any chunk
+        // dequeued at stop time; Phase 2 appends to it.
         loop {
             match chunk_rx.recv_timeout(std::time::Duration::from_secs(15)) {
                 Ok(chunk) => {
