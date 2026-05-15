@@ -82,6 +82,9 @@ fn main() {
             // Janela de conformidade
             commands::open_compliance_window,
             commands::close_compliance_window,
+            // Calibração de microfone
+            commands::measure_ambient_noise,
+            commands::record_calibration_phase,
         ])
         .setup(|app| {
             #[cfg(debug_assertions)]

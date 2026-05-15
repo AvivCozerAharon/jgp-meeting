@@ -113,6 +113,13 @@ fn summary_credentials(settings: &storage::AppSettings) -> (String, &'static str
 
 // ─── Estado Global ────────────────────────────────────────────────────────────
 
+#[derive(Default, Clone)]
+pub struct CalibrationMetrics {
+    pub speech_rms: f32,
+    pub speech_peak: f32,
+    pub silence_rms: f32,
+}
+
 pub struct AppState {
     pub capture_state: Arc<AudioCaptureState>,
     /// Lock-free transcript buffer (ArcSwap para escrita sem bloquear leitura)
@@ -124,6 +131,7 @@ pub struct AppState {
     /// ID da reunião sendo drenada (worker processando chunks pendentes após stop).
     /// Usado para re-salvar a reunião com a transcrição completa após draining.
     pub draining_meeting_id: Mutex<Option<String>>,
+    pub calibration: Mutex<CalibrationMetrics>,
 }
 
 impl AppState {
@@ -136,6 +144,7 @@ impl AppState {
             capture_start: Mutex::new(None),
             stop_tx: Mutex::new(None),
             draining_meeting_id: Mutex::new(None),
+            calibration: Mutex::new(CalibrationMetrics::default()),
         }
     }
 }
@@ -834,6 +843,151 @@ pub async fn test_microphone(
             "RMS médio={:.4}, pico={:.4}. Threshold atual={:.4}. {}",
             avg_rms, peak, settings.mic_silence_threshold, recommendation
         ),
+    }))
+}
+
+/// Mede o ruído ambiente por 2 segundos sem filtros.
+/// Usado pelo wizard de calibração para verificar o ambiente antes de começar.
+#[tauri::command]
+pub async fn measure_ambient_noise(
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    use std::sync::atomic::Ordering;
+
+    let settings = storage::load_settings().map_err(|e| e.to_string())?;
+    let capture_state = Arc::new(AudioCaptureState::new());
+    let (chunk_tx, chunk_rx) = mpsc::channel::<AudioChunk>();
+
+    let mic_config = audio::MicConfig {
+        enabled: true,
+        device_id: settings.selected_microphone.clone(),
+        silence_threshold: 0.0,
+        auto_gain: false,
+        gain_max: 1.0,
+    };
+    audio::start_capture(
+        Arc::clone(&capture_state),
+        chunk_tx,
+        audio::SystemConfig {
+            chunk_duration_secs: 1.0,
+            silence_threshold: 0.0,
+            auto_gain: false,
+            gain_max: 1.0,
+        },
+        mic_config,
+    )
+    .map_err(|e| format!("Erro ao iniciar captura: {e}"))?;
+
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    capture_state.is_capturing.store(false, Ordering::SeqCst);
+
+    let mut rms_values: Vec<f32> = Vec::new();
+    while let Ok(chunk) = chunk_rx.try_recv() {
+        if chunk.source == AudioSource::Microphone && !chunk.samples.is_empty() {
+            let rms = (chunk.samples.iter().map(|s| s * s).sum::<f32>()
+                / chunk.samples.len() as f32)
+                .sqrt();
+            rms_values.push(rms);
+        }
+    }
+
+    let avg_rms = if rms_values.is_empty() {
+        0.0f32
+    } else {
+        rms_values.iter().sum::<f32>() / rms_values.len() as f32
+    };
+
+    // Reset calibration metrics at start of new wizard session
+    *state.calibration.lock() = CalibrationMetrics::default();
+
+    Ok(serde_json::json!({ "avg_rms": avg_rms }))
+}
+
+/// Grava uma fase de calibração (fala ou silêncio) e armazena as métricas em AppState.
+/// Emite eventos `mic-test-level` a cada 50ms durante a gravação.
+/// phase: "speech" (5s) | "silence" (3s)
+#[tauri::command]
+pub async fn record_calibration_phase(
+    phase: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    use std::sync::atomic::Ordering;
+
+    let settings = storage::load_settings().map_err(|e| e.to_string())?;
+    let duration_secs: u64 = if phase == "speech" { 5 } else { 3 };
+
+    let capture_state = Arc::new(AudioCaptureState::new());
+    capture_state.is_capturing.store(true, Ordering::SeqCst);
+    let (chunk_tx, chunk_rx) = mpsc::channel::<AudioChunk>();
+
+    let mic_config = audio::MicConfig {
+        enabled: true,
+        device_id: settings.selected_microphone.clone(),
+        silence_threshold: 0.0,
+        auto_gain: false,
+        gain_max: 1.0,
+    };
+    audio::start_capture(
+        Arc::clone(&capture_state),
+        chunk_tx,
+        audio::SystemConfig {
+            chunk_duration_secs: 1.0,
+            silence_threshold: 0.0,
+            auto_gain: false,
+            gain_max: 1.0,
+        },
+        mic_config,
+    )
+    .map_err(|e| format!("Erro ao iniciar captura: {e}"))?;
+
+    let cap_emit = Arc::clone(&capture_state);
+    let app_emit = app.clone();
+    let level_handle = tokio::spawn(async move {
+        while cap_emit.is_capturing() {
+            let level = *cap_emit.mic_level.lock();
+            let _ = app_emit.emit("mic-test-level", level);
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    });
+
+    tokio::time::sleep(std::time::Duration::from_secs(duration_secs)).await;
+    capture_state.is_capturing.store(false, Ordering::SeqCst);
+    let _ = level_handle.await;
+
+    let mut rms_values: Vec<f32> = Vec::new();
+    let mut peak: f32 = 0.0;
+    while let Ok(chunk) = chunk_rx.try_recv() {
+        if chunk.source == AudioSource::Microphone && !chunk.samples.is_empty() {
+            let rms = (chunk.samples.iter().map(|s| s * s).sum::<f32>()
+                / chunk.samples.len() as f32)
+                .sqrt();
+            let chunk_peak = chunk.samples.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+            rms_values.push(rms);
+            peak = peak.max(chunk_peak);
+        }
+    }
+
+    let avg_rms = if rms_values.is_empty() {
+        0.0f32
+    } else {
+        rms_values.iter().sum::<f32>() / rms_values.len() as f32
+    };
+
+    {
+        let mut cal = state.calibration.lock();
+        if phase == "speech" {
+            cal.speech_rms = avg_rms;
+            cal.speech_peak = peak;
+        } else {
+            cal.silence_rms = avg_rms;
+        }
+    }
+
+    Ok(serde_json::json!({
+        "avg_rms": avg_rms,
+        "peak": peak,
+        "phase": phase,
     }))
 }
 
