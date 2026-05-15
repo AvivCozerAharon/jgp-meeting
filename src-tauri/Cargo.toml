@@ -17,6 +17,7 @@ tauri = { version = "2", features = ["devtools", "tray-icon"] }
 
 # Plugins Tauri v2
 tauri-plugin-global-shortcut = "2"
+tauri-plugin-updater = "2"
 
 # Serialização
 serde = { version = "1.0", features = ["derive"] }
