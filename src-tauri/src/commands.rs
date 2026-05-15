@@ -1003,6 +1003,229 @@ pub async fn record_calibration_phase(
     }))
 }
 
+fn word_similarity(a: &str, b: &str) -> f32 {
+    use std::collections::HashSet;
+    let normalize = |s: &str| -> HashSet<String> {
+        s.chars()
+            .filter(|c| c.is_alphanumeric() || c.is_whitespace())
+            .collect::<String>()
+            .split_whitespace()
+            .map(|w| w.to_lowercase())
+            .collect()
+    };
+    let a_words = normalize(a);
+    let b_words = normalize(b);
+    if a_words.is_empty() && b_words.is_empty() {
+        return 1.0;
+    }
+    if a_words.is_empty() || b_words.is_empty() {
+        return 0.0;
+    }
+    let intersection = a_words.intersection(&b_words).count() as f32;
+    let union = a_words.union(&b_words).count() as f32;
+    intersection / union
+}
+
+/// Lê as métricas armazenadas no AppState e calcula as configurações recomendadas.
+/// Retorna os valores recomendados — NÃO salva (o frontend salva após confirmação).
+#[tauri::command]
+pub async fn compute_calibration(
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    let cal = state.calibration.lock().clone();
+
+    let speech_rms = cal.speech_rms;
+    let speech_peak = cal.speech_peak;
+    let silence_rms = cal.silence_rms;
+
+    let snr = if silence_rms > 0.0001 {
+        speech_rms / silence_rms
+    } else {
+        99.0
+    };
+
+    let (round_passed, failure_reason): (bool, Option<&str>) = if speech_peak > 0.95 {
+        (false, Some("Clipping detectado — você está muito perto do microfone. Recue um pouco e tente novamente."))
+    } else if speech_rms < 0.02 {
+        (false, Some("Microfone muito baixo — fale mais alto ou aproxime-se do microfone."))
+    } else if snr < 6.0 {
+        (false, Some("Muito ruído de fundo — tente se afastar de fontes de ruído ou aproximar o microfone."))
+    } else {
+        (true, None)
+    };
+
+    let recommended_threshold = (silence_rms * 2.5).clamp(0.001, 0.025);
+
+    let (auto_gain, gain_max) = if speech_rms >= 0.12 {
+        (false, 1.0f32)
+    } else {
+        let gmax = (0.18 / speech_rms.max(0.001)).clamp(1.5, 8.0);
+        (true, gmax)
+    };
+
+    let noise_gate_preset = if silence_rms < 0.003 {
+        "silent"
+    } else if silence_rms <= 0.010 {
+        "meeting"
+    } else {
+        "auditorium"
+    };
+
+    let (noise_gate_ratio, noise_gate_hold) = match noise_gate_preset {
+        "silent"  => (0.0f32, 0.3f32),
+        "meeting" => (3.0f32, 0.4f32),
+        _         => (6.0f32, 0.6f32),
+    };
+
+    Ok(serde_json::json!({
+        "mic_auto_gain": auto_gain,
+        "mic_gain_max": (gain_max * 10.0).round() / 10.0,
+        "mic_silence_threshold": (recommended_threshold * 10000.0).round() / 10000.0,
+        "noise_gate_preset": noise_gate_preset,
+        "mic_noise_gate_ratio": noise_gate_ratio,
+        "mic_noise_gate_hold_secs": noise_gate_hold,
+        "snr": (snr * 10.0).round() / 10.0,
+        "round_passed": round_passed,
+        "failure_reason": failure_reason,
+        "speech_rms": (speech_rms * 10000.0).round() / 10000.0,
+        "silence_rms": (silence_rms * 10000.0).round() / 10000.0,
+    }))
+}
+
+/// Grava 6s com as configurações recomendadas, transcreve e compara com a frase fixa.
+#[tauri::command]
+pub async fn test_mic_transcription_phrase(
+    app: AppHandle,
+    auto_gain: bool,
+    gain_max: f32,
+    silence_threshold: f32,
+) -> Result<serde_json::Value, String> {
+    use std::sync::atomic::Ordering;
+
+    const EXPECTED: &str = "A reunião de alinhamento com o cliente começa às quatorze horas na sala de conferências";
+
+    let settings = storage::load_settings().map_err(|e| e.to_string())?;
+
+    if settings.transcription_provider == "openai" && settings.openai_api_key.is_empty() {
+        return Err("Chave da API OpenAI não configurada.".into());
+    }
+    if settings.transcription_provider == "groq" && settings.groq_api_key.is_empty() {
+        return Err("Chave da API Groq não configurada.".into());
+    }
+
+    let capture_state = Arc::new(AudioCaptureState::new());
+    capture_state.is_capturing.store(true, Ordering::SeqCst);
+    let (chunk_tx, chunk_rx) = mpsc::channel::<AudioChunk>();
+
+    let mic_config = audio::MicConfig {
+        enabled: true,
+        device_id: settings.selected_microphone.clone(),
+        silence_threshold,
+        auto_gain,
+        gain_max,
+    };
+    audio::start_capture(
+        Arc::clone(&capture_state),
+        chunk_tx,
+        audio::SystemConfig {
+            chunk_duration_secs: 1.0,
+            silence_threshold: 0.0,
+            auto_gain: false,
+            gain_max: 1.0,
+        },
+        mic_config,
+    )
+    .map_err(|e| format!("Erro ao iniciar captura: {e}"))?;
+
+    let cap_emit = Arc::clone(&capture_state);
+    let app_emit = app.clone();
+    let level_handle = tokio::spawn(async move {
+        while cap_emit.is_capturing() {
+            let level = *cap_emit.mic_level.lock();
+            let _ = app_emit.emit("mic-test-level", level);
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    });
+
+    tokio::time::sleep(std::time::Duration::from_secs(6)).await;
+    capture_state.is_capturing.store(false, Ordering::SeqCst);
+    let _ = level_handle.await;
+
+    let mut all_samples: Vec<f32> = Vec::new();
+    let mut sample_rate = 48000u32;
+    let mut channels = 1u16;
+
+    while let Ok(chunk) = chunk_rx.try_recv() {
+        if chunk.source == AudioSource::Microphone && !chunk.samples.is_empty() {
+            sample_rate = chunk.sample_rate;
+            channels = chunk.channels;
+            all_samples.extend_from_slice(&chunk.samples);
+        }
+    }
+
+    if all_samples.is_empty() {
+        return Ok(serde_json::json!({
+            "similarity": 0.0,
+            "expected": EXPECTED,
+            "got": "",
+            "passed": false,
+            "diagnosis": "Nenhum áudio capturado. Verifique se o microfone está funcionando.",
+        }));
+    }
+
+    let wav_bytes = build_wav_from_samples(&all_samples, sample_rate, channels)
+        .map_err(|e| format!("Erro ao gerar WAV: {e}"))?;
+
+    let glossary_part: Option<String> = {
+        let terms: Vec<&str> = settings.whisper_glossary
+            .split([',', '\n'])
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .collect();
+        if terms.is_empty() { None } else { Some(terms.join(", ")) }
+    };
+    let effective_prompt = match (glossary_part, settings.whisper_prompt.is_empty()) {
+        (None, true)   => None,
+        (None, false)  => Some(settings.whisper_prompt.clone()),
+        (Some(g), true)  => Some(g),
+        (Some(g), false) => Some(format!("{} {}", g, settings.whisper_prompt)),
+    };
+    let prompt_opt = effective_prompt.as_deref();
+    let lang = if settings.transcription_language.is_empty() {
+        None
+    } else {
+        Some(settings.transcription_language.as_str())
+    };
+
+    let transcript = match settings.transcription_provider.as_str() {
+        "groq" => transcription::transcribe_groq(wav_bytes, &settings.groq_api_key, lang, prompt_opt).await,
+        _      => transcription::transcribe_audio(wav_bytes, &settings.openai_api_key, lang, prompt_opt).await,
+    }
+    .map(|t| t.trim().to_string())
+    .unwrap_or_default();
+
+    let similarity = word_similarity(EXPECTED, &transcript);
+    let passed = similarity >= 0.85;
+
+    let word_count = transcript.split_whitespace().count();
+    let expected_count = EXPECTED.split_whitespace().count();
+    let diagnosis = if word_count < 3 {
+        "Áudio muito baixo — fale mais alto ou aproxime o microfone"
+    } else if word_count < expected_count / 2 {
+        "Ruído de fundo interferindo — tente num ambiente mais silencioso"
+    } else {
+        "Fala diferente do esperado — tente falar mais devagar e claramente"
+    };
+
+    Ok(serde_json::json!({
+        "similarity": (similarity * 100.0).round() / 100.0,
+        "expected": EXPECTED,
+        "got": transcript,
+        "passed": passed,
+        "diagnosis": if passed { "" } else { diagnosis },
+    }))
+}
+
 /// Testa o microfone com transcrição real usando as configurações atuais.
 /// Captura áudio do mic, transcreve via Whisper e retorna o resultado
 /// com indicador de qualidade. Emite eventos `mic-test-level` durante a gravação.
