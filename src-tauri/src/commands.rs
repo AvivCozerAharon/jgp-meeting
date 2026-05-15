@@ -1197,12 +1197,24 @@ pub async fn test_mic_transcription_phrase(
         Some(settings.transcription_language.as_str())
     };
 
-    let transcript = match settings.transcription_provider.as_str() {
+    let transcript_result = match settings.transcription_provider.as_str() {
         "groq" => transcription::transcribe_groq(wav_bytes, &settings.groq_api_key, lang, prompt_opt).await,
         _      => transcription::transcribe_audio(wav_bytes, &settings.openai_api_key, lang, prompt_opt).await,
     }
-    .map(|t| t.trim().to_string())
-    .unwrap_or_default();
+    .map(|t| t.trim().to_string());
+
+    let transcript = match transcript_result {
+        Ok(t) => t,
+        Err(e) => {
+            return Ok(serde_json::json!({
+                "similarity": 0.0,
+                "expected": EXPECTED,
+                "got": "",
+                "passed": false,
+                "diagnosis": format!("Erro na API de transcrição: {e}"),
+            }));
+        }
+    };
 
     let similarity = word_similarity(EXPECTED, &transcript);
     let passed = similarity >= 0.85;
