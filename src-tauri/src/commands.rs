@@ -113,7 +113,7 @@ fn summary_credentials(settings: &storage::AppSettings) -> (String, &'static str
 
 // ─── Estado Global ────────────────────────────────────────────────────────────
 
-#[derive(Default, Clone)]
+#[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CalibrationMetrics {
     pub speech_rms: f32,
     pub speech_peak: f32,
@@ -854,6 +854,13 @@ pub async fn measure_ambient_noise(
 ) -> Result<serde_json::Value, String> {
     use std::sync::atomic::Ordering;
 
+    // Reset calibration metrics at start of new wizard session
+    *state.calibration.lock() = CalibrationMetrics::default();
+
+    if state.capture_state.is_capturing() {
+        return Err("Não é possível calibrar durante uma captura ativa.".into());
+    }
+
     let settings = storage::load_settings().map_err(|e| e.to_string())?;
     let capture_state = Arc::new(AudioCaptureState::new());
     let (chunk_tx, chunk_rx) = mpsc::channel::<AudioChunk>();
@@ -897,9 +904,6 @@ pub async fn measure_ambient_noise(
         rms_values.iter().sum::<f32>() / rms_values.len() as f32
     };
 
-    // Reset calibration metrics at start of new wizard session
-    *state.calibration.lock() = CalibrationMetrics::default();
-
     Ok(serde_json::json!({ "avg_rms": avg_rms }))
 }
 
@@ -913,6 +917,14 @@ pub async fn record_calibration_phase(
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
     use std::sync::atomic::Ordering;
+
+    if state.capture_state.is_capturing() {
+        return Err("Não é possível calibrar durante uma captura ativa.".into());
+    }
+
+    if phase != "speech" && phase != "silence" {
+        return Err(format!("phase inválido: {phase}. Use \"speech\" ou \"silence\"."));
+    }
 
     let settings = storage::load_settings().map_err(|e| e.to_string())?;
     let duration_secs: u64 = if phase == "speech" { 5 } else { 3 };
