@@ -280,13 +280,23 @@ pub async fn start_capture(
             whisper_glossary: &str,
             app: &AppHandle,
         ) -> bool {
-            let _ = app.emit("transcription-processing", true);
+            let source_str = match chunk.source {
+                AudioSource::Microphone => "mic",
+                AudioSource::System => "system",
+            };
+            let _ = app.emit("transcription-processing", serde_json::json!({
+                "active": true,
+                "source": source_str
+            }));
 
             let wav_bytes = match chunk.to_wav_bytes() {
                 Ok(b) => b,
                 Err(e) => {
                     log::error!("Erro ao codificar WAV: {e}");
-                    let _ = app.emit("transcription-processing", false);
+                    let _ = app.emit("transcription-processing", serde_json::json!({
+                        "active": false,
+                        "source": null
+                    }));
                     return false;
                 }
             };
@@ -444,7 +454,10 @@ pub async fn start_capture(
                 }
             };
 
-            let _ = app.emit("transcription-processing", false);
+            let _ = app.emit("transcription-processing", serde_json::json!({
+                "active": false,
+                "source": null
+            }));
             got_text
         }
 
