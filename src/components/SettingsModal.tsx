@@ -36,7 +36,7 @@ import { MEETING_TYPE_LABELS, MEETING_TYPE_ICONS } from "@/types";
 import { getSettings, saveSettings } from "@/services/storageService";
 import { Spinner } from "./LoadingSpinner";
 import { TagManager } from "./TagManager";
-import { MicTuner } from "./MicTuner";
+import { MicCalibrationWizard } from "./MicCalibrationWizard";
 
 const ALL_MEETING_TYPES: MeetingType[] = [
   'general', 'standup', 'one_on_one', 'retrospective', 'commercial', 'interview',
@@ -344,7 +344,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ className, activeT
               )}
             >
               <SlidersHorizontal className="w-3.5 h-3.5" />
-              Ajustar microfone
+              Calibrar microfone
             </button>
           )}
         </div>
@@ -359,8 +359,8 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ className, activeT
             {/* AGC toggle */}
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-xs font-medium text-surface-700 dark:text-surface-300">Ganho Automático (AGC)</p>
-                <p className="text-[10px] text-surface-400 dark:text-surface-500">Amplifica o volume do mic automaticamente</p>
+                <p className="text-xs font-medium text-surface-700 dark:text-surface-300">Amplificação automática</p>
+                <p className="text-[10px] text-surface-400 dark:text-surface-500">Normaliza o volume do microfone automaticamente</p>
               </div>
               <div
                 onClick={() => updateSetting("mic_auto_gain", !settings.mic_auto_gain)}
@@ -382,7 +382,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ className, activeT
             {settings.mic_auto_gain && (
               <div>
                 <p className="text-xs font-medium text-surface-700 dark:text-surface-300 mb-1">
-                  Ganho máximo: {settings.mic_gain_max?.toFixed(1) ?? '4.0'}x
+                  Nível máximo de amplificação: {settings.mic_gain_max?.toFixed(1) ?? '4.0'}x
                 </p>
                 <input
                   type="range"
@@ -403,7 +403,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ className, activeT
             {/* Sensibilidade ao silêncio do mic */}
             <div>
               <p className="text-xs font-medium text-surface-700 dark:text-surface-300 mb-1">
-                Sensibilidade do mic: {settings.mic_silence_threshold?.toFixed(3) ?? '0.003'}
+                Cortar silêncios curtos: {settings.mic_silence_threshold?.toFixed(3) ?? '0.003'}
               </p>
               <input
                 type="range"
@@ -424,13 +424,13 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ className, activeT
             <div>
               <div className="flex items-center justify-between mb-2">
                 <p className="text-xs font-medium text-surface-700 dark:text-surface-300">
-                  Noise gate adaptativo
+                  Filtrar ruído de fundo
                 </p>
                 <div className="flex gap-1">
                   {[
-                    { label: "Silenciosa", ratio: 0, hold: 0.3 },
-                    { label: "Reunião", ratio: 3, hold: 0.4 },
-                    { label: "Auditório", ratio: 6, hold: 0.6 },
+                    { label: "Ambiente silencioso", ratio: 0, hold: 0.3 },
+                    { label: "Escritório", ratio: 3, hold: 0.4 },
+                    { label: "Sala barulhenta", ratio: 6, hold: 0.6 },
                   ].map((preset) => (
                     <button
                       key={preset.label}
@@ -979,9 +979,13 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ className, activeT
 
       <TagManager isOpen={showTagManager} onClose={() => setShowTagManager(false)} />
       {showMicTuner && (
-        <MicTuner
+        <MicCalibrationWizard
           settings={settings}
-          onUpdateSetting={updateSetting}
+          onApply={(patch) => {
+            (Object.keys(patch) as Array<keyof AppSettings>).forEach((key) => {
+              updateSetting(key, patch[key] as AppSettings[typeof key]);
+            });
+          }}
           onClose={() => setShowMicTuner(false)}
         />
       )}
