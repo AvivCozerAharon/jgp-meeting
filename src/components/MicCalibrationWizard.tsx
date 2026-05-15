@@ -73,12 +73,22 @@ export function MicCalibrationWizard({ settings, onApply, onClose }: MicCalibrat
 
   const unlistenRef = useRef<UnlistenFn | null>(null);
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const subscribingRef = useRef(false);
 
   const subscribeToLevel = useCallback(async () => {
-    if (unlistenRef.current) unlistenRef.current();
-    unlistenRef.current = await listen<number>("mic-test-level", (e) =>
-      setMicLevel(e.payload)
-    );
+    if (subscribingRef.current) return;
+    subscribingRef.current = true;
+    if (unlistenRef.current) {
+      unlistenRef.current();
+      unlistenRef.current = null;
+    }
+    try {
+      unlistenRef.current = await listen<number>("mic-test-level", (e) =>
+        setMicLevel(e.payload)
+      );
+    } finally {
+      subscribingRef.current = false;
+    }
   }, []);
 
   const clearCountdown = useCallback(() => {
@@ -132,17 +142,19 @@ export function MicCalibrationWizard({ settings, onApply, onClose }: MicCalibrat
       invoke("record_calibration_phase", { phase: "speech" })
         .then(() => setStep("silence-recording"))
         .catch((e: unknown) => { setErrorMsg(String(e)); setStep("error"); });
-    });
+    }).catch((e: unknown) => { setErrorMsg(String(e)); setStep("error"); });
   }, [step, subscribeToLevel]);
 
   // silence-recording
   useEffect(() => {
     if (step !== "silence-recording") return;
     setMicLevel(0);
-    invoke("record_calibration_phase", { phase: "silence" })
-      .then(() => setStep("computing"))
-      .catch((e: unknown) => { setErrorMsg(String(e)); setStep("error"); });
-  }, [step]);
+    subscribeToLevel().then(() => {
+      invoke("record_calibration_phase", { phase: "silence" })
+        .then(() => setStep("computing"))
+        .catch((e: unknown) => { setErrorMsg(String(e)); setStep("error"); });
+    }).catch((e: unknown) => { setErrorMsg(String(e)); setStep("error"); });
+  }, [step, subscribeToLevel]);
 
   // computing
   useEffect(() => {
@@ -175,7 +187,7 @@ export function MicCalibrationWizard({ settings, onApply, onClose }: MicCalibrat
           setStep("transcription-result");
         })
         .catch((e: unknown) => { setErrorMsg(String(e)); setStep("error"); });
-    });
+    }).catch((e: unknown) => { setErrorMsg(String(e)); setStep("error"); });
   }, [step, calibration, subscribeToLevel]);
 
   const handleStartSpeech = useCallback(() => setStep("speech-countdown"), []);
@@ -542,7 +554,16 @@ export function MicCalibrationWizard({ settings, onApply, onClose }: MicCalibrat
                 </div>
               </div>
               <button
-                onClick={() => { setStep("pre-check"); setRound(1); }}
+                onClick={() => {
+                  setStep("pre-check");
+                  setRound(1);
+                  setCalibration(null);
+                  setTranscription(null);
+                  setTranscriptionRetries(0);
+                  setSpeechInstructions(
+                    "Fale normalmente por 5 segundos — conte o que você está fazendo hoje, por exemplo."
+                  );
+                }}
                 className="w-full px-4 py-2.5 rounded-xl text-sm font-semibold bg-primary-500 text-white hover:bg-primary-600 transition-all"
               >
                 Tentar novamente
