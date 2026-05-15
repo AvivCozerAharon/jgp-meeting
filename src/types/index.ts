@@ -88,6 +88,18 @@ export interface Meeting {
   tags?: string[];
 }
 
+// ─── Calibração ───────────────────────────────────────────────────────────────
+
+export interface CalibrationSnapshot {
+  name: string;
+  created_at: string;
+  mic_auto_gain: boolean;
+  mic_gain_max: number;
+  mic_silence_threshold: number;
+  mic_noise_gate_ratio: number;
+  mic_noise_gate_hold_secs: number;
+}
+
 // ─── Configurações ────────────────────────────────────────────────────────────
 
 export interface AppSettings {
@@ -147,6 +159,8 @@ export interface AppSettings {
   jgrc_session_cookie: string;
   /** Wizard de configuração inicial foi concluído */
   setup_done: boolean;
+  /** Perfis de calibração salvos (max 3) */
+  calibration_snapshots: CalibrationSnapshot[];
 }
 
 /** Dispositivo de áudio de entrada disponível no sistema */

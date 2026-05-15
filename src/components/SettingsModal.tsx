@@ -153,6 +153,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ className, activeT
     jgrc_session_cookie: "",
     theme: "dark",
     setup_done: false,
+    calibration_snapshots: [],
   });
   const [isLoading, setIsLoading] = useState(true);
   const [saveStatus, setSaveStatus] = useState<"idle" | "success" | "error">("idle");
