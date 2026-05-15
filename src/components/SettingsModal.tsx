@@ -2,7 +2,7 @@
 // Modal/painel de configurações do aplicativo.
 // Permite configurar a chave da API OpenAI, idioma e outros parâmetros.
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import clsx from "clsx";
 import {
   Key,
@@ -11,7 +11,6 @@ import {
   Clock,
   Eye,
   EyeOff,
-  Save,
   CheckCircle2,
   AlertCircle,
   Mic,
@@ -156,12 +155,13 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ className, activeT
     setup_done: false,
   });
   const [isLoading, setIsLoading] = useState(true);
-  const [isSaving, setIsSaving] = useState(false);
   const [saveStatus, setSaveStatus] = useState<"idle" | "success" | "error">("idle");
   const [showKey, setShowKey] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [showTagManager, setShowTagManager] = useState(false);
   const [showMicTuner, setShowMicTuner] = useState(false);
+  const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isFirstLoad = useRef(true);
 
   // Lista de microfones disponíveis no sistema
   const [microphones, setMicrophones] = useState<AudioDevice[]>([]);
@@ -170,7 +170,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ className, activeT
   // Carrega as configurações ao montar
   useEffect(() => {
     getSettings()
-      .then((s) => setSettings(s))
+      .then((s) => { setSettings(s); isFirstLoad.current = false; })
       .catch(console.error)
       .finally(() => setIsLoading(false));
   }, []);
@@ -184,26 +184,28 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ className, activeT
       .finally(() => setLoadingMics(false));
   }, []);
 
-  const handleSave = async () => {
-    setIsSaving(true);
-    setSaveStatus("idle");
-    setSaveError(null);
-
+  const doSave = useCallback(async (s: AppSettings) => {
     try {
-      await saveSettings(settings);
+      await saveSettings(s);
       setSaveStatus("success");
-      setTimeout(() => setSaveStatus("idle"), 3000);
+      setTimeout(() => setSaveStatus("idle"), 2000);
     } catch (err) {
       setSaveError(String(err));
       setSaveStatus("error");
-    } finally {
-      setIsSaving(false);
     }
-  };
+  }, []);
+
+  // Auto-save com debounce de 800ms após qualquer alteração
+  useEffect(() => {
+    if (isFirstLoad.current) return;
+    setSaveStatus("idle");
+    if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
+    autoSaveTimer.current = setTimeout(() => doSave(settings), 800);
+    return () => { if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current); };
+  }, [settings]);
 
   const updateSetting = <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => {
     setSettings((prev) => ({ ...prev, [key]: value }));
-    setSaveStatus("idle");
   };
 
   if (isLoading) {
@@ -496,7 +498,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ className, activeT
       <SettingSection
         icon={<MessageSquare className="w-4 h-4 text-surface-500" />}
         title="Prompt de Contexto (Whisper)"
-        description="Texto de contexto enviado ao Whisper para melhorar a transcrição. Inclua nomes de pessoas, empresas, termos técnicos ou jargão relevante."
+        description="Instruções contextuais livres enviadas ao Whisper. Use para descrever o contexto da reunião, participantes ou estilo esperado. Ex: 'Reunião interna da JGP. Participantes: André e Marcelo.'"
       >
         <textarea
           value={settings.whisper_prompt ?? ""}
@@ -519,7 +521,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ className, activeT
         title={
           <div className="flex items-center gap-1.5">
             <span>Glossário de Termos</span>
-            <Tooltip content="Liste termos, nomes ou siglas que devem ser reconhecidos corretamente, separados por vírgula. Ex: JGP, Vorcaro, CDI, gestora de fundos. Esses termos são enviados como contexto ao Whisper antes de cada chunk de áudio." />
+            <Tooltip content="Lista de palavras isoladas (nomes, siglas, jargões) separadas por vírgula. O Whisper usa para grafar corretamente. Diferente do Prompt, não carrega contexto narrativo — só vocabulário. Ex: JGP, Vorcaro, CDI, FIC FIM." />
           </div>
         }
         description=""
@@ -956,46 +958,23 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ className, activeT
       </SettingSection>
       </>)}
 
-      {/* Botão Salvar */}
-      <div className="flex items-center justify-between pt-2">
-        <div>
-          {saveStatus === "success" && (
-            <p className="text-sm text-primary-600 dark:text-primary-400 flex items-center gap-1.5 animate-fade-in">
-              <CheckCircle2 className="w-4 h-4" />
-              Configurações salvas!
-            </p>
-          )}
-          {saveStatus === "error" && saveError && (
-            <p className="text-sm text-red-600 dark:text-red-400 flex items-center gap-1.5">
-              <AlertCircle className="w-4 h-4" />
-              {saveError}
-            </p>
-          )}
-        </div>
-
-        <button
-          onClick={handleSave}
-          disabled={isSaving}
-          className={clsx(
-            "flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold",
-            "bg-primary-500 text-white shadow-sm",
-            "hover:bg-primary-600 hover:shadow transition-all duration-150",
-            "focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 dark:focus:ring-offset-surface-800",
-            "disabled:opacity-60 disabled:cursor-not-allowed"
-          )}
-        >
-          {isSaving ? (
-            <>
-              <Spinner size="xs" color="white" />
-              Salvando...
-            </>
-          ) : (
-            <>
-              <Save className="w-4 h-4" />
-              Salvar
-            </>
-          )}
-        </button>
+      {/* Toast de auto-save */}
+      <div className={clsx(
+        "flex items-center justify-end pt-1 transition-opacity duration-300",
+        saveStatus === "idle" ? "opacity-0 pointer-events-none" : "opacity-100"
+      )}>
+        {saveStatus === "success" && (
+          <span className="flex items-center gap-1.5 text-xs text-primary-600 dark:text-primary-400">
+            <CheckCircle2 className="w-3.5 h-3.5" />
+            Salvo
+          </span>
+        )}
+        {saveStatus === "error" && saveError && (
+          <span className="flex items-center gap-1.5 text-xs text-red-600 dark:text-red-400">
+            <AlertCircle className="w-3.5 h-3.5" />
+            {saveError}
+          </span>
+        )}
       </div>
 
       <TagManager isOpen={showTagManager} onClose={() => setShowTagManager(false)} />
