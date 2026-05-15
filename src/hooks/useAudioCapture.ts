@@ -19,7 +19,7 @@ export interface AudioCaptureState {
   audioLevel: number;
   micLevel: number;
   micMuted: boolean;
-  isProcessing: boolean;
+  processingSource: "mic" | "system" | null;
   error: string | null;
   duration: number;
   lastMeetingId: string | null;
@@ -45,7 +45,7 @@ export function useAudioCapture(): [AudioCaptureState, AudioCaptureActions] {
   const [audioLevel, setAudioLevel] = useState(0);
   const [micLevel, setMicLevel] = useState(0);
   const [micMuted, setMicMuted] = useState(false);
-  const [isProcessing, setIsProcessing] = useState(false);
+  const [processingSource, setProcessingSource] = useState<"mic" | "system" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [duration, setDuration] = useState(0);
   const [lastMeetingId, setLastMeetingId] = useState<string | null>(null);
@@ -70,8 +70,8 @@ export function useAudioCapture(): [AudioCaptureState, AudioCaptureActions] {
         if (isMounted) setMicLevel(e.payload);
       });
 
-      const unlistenProcessing = await onTranscriptionProcessing((processing) => {
-        if (isMounted) setIsProcessing(processing);
+      const unlistenProcessing = await onTranscriptionProcessing((payload) => {
+        if (isMounted) setProcessingSource(payload.active ? payload.source : null);
       });
 
       const unlistenError = await onTranscriptionError((err) => {
@@ -84,7 +84,7 @@ export function useAudioCapture(): [AudioCaptureState, AudioCaptureActions] {
           setIsCapturing(false);
           setAudioLevel(0);
           setMicLevel(0);
-          setIsProcessing(false);
+          setProcessingSource(null);
           // Payload vazio = parou sem salvar (ex: transcrição vazia)
           if (e.payload) setLastMeetingId(e.payload);
           setIsPaused(false);
@@ -146,7 +146,7 @@ export function useAudioCapture(): [AudioCaptureState, AudioCaptureActions] {
       const meetingId = await stopCapture();
       setIsCapturing(false);
       setAudioLevel(0);
-      setIsProcessing(false);
+      setProcessingSource(null);
       setLastMeetingId(meetingId);
       return meetingId;
     } catch (err) {
@@ -178,7 +178,7 @@ export function useAudioCapture(): [AudioCaptureState, AudioCaptureActions] {
   const clearError = useCallback(() => setError(null), []);
 
   return [
-    { isCapturing, audioLevel, micLevel, micMuted, isProcessing, error, duration, lastMeetingId, isPaused },
+    { isCapturing, audioLevel, micLevel, micMuted, processingSource, error, duration, lastMeetingId, isPaused },
     { start, stop, toggleMicMute, clearError, togglePause },
   ];
 }

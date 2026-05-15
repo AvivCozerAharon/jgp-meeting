@@ -180,7 +180,10 @@ export type SummaryStatus = 'idle' | 'loading' | 'done' | 'error';
 // Eventos Tauri
 export type TranscriptionUpdatePayload = string;
 export type AudioLevelPayload = number;
-export type TranscriptionProcessingPayload = boolean;
+export type TranscriptionProcessingPayload = {
+  active: boolean;
+  source: "mic" | "system" | null;
+};
 export type TranscriptionErrorPayload = string;
 
 /** Progresso do draining de chunks pendentes após parar gravação */

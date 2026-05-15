@@ -77,7 +77,7 @@ export async function onAudioLevel(
  * Retorna função para cancelar o listener.
  */
 export async function onTranscriptionProcessing(
-  callback: (isProcessing: boolean) => void
+  callback: (payload: TranscriptionProcessingPayload) => void
 ): Promise<UnlistenFn> {
   return listen<TranscriptionProcessingPayload>(
     "transcription-processing",
