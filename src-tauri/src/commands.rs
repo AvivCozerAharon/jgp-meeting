@@ -363,8 +363,9 @@ pub async fn start_capture(
                             text: text.clone(),
                         };
 
-                        // Dedup: skip if too similar to the most recent segment of the same source.
-                        // Short texts (< 4 words) skip the check — bigrams unreliable on short strings.
+                        // Dedup: skip if too similar to a recent segment (same-source Jaccard >= 0.85,
+                        // or cross-stream Jaccard >= 0.70 within a 3 s window).
+                        // Short texts (< 4 words) skip both checks — bigrams unreliable on short strings.
                         let word_count = text.split_whitespace().count();
                         let is_duplicate = if word_count < 4 {
                             false
@@ -383,6 +384,7 @@ pub async fn start_capture(
                             segs.iter()
                                 .rev()
                                 .filter(|s| s.source == opposite)
+                                // Compare against the first (most recent) opposite-source segment in the 3 s window.
                                 .find(|s| timestamp_ms.abs_diff(s.timestamp_ms) < 3000)
                                 .map(|prev| jaccard_bigrams(&prev.text, &text) >= 0.70)
                                 .unwrap_or(false)
