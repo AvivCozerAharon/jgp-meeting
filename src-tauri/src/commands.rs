@@ -377,13 +377,29 @@ pub async fn start_capture(
                                 .unwrap_or(false)
                         };
 
-                        if is_duplicate {
+                        let is_cross_dup = if !is_duplicate && word_count >= 4 {
+                            let opposite = if source == "mic" { "system" } else { "mic" };
+                            let segs = app_state.segments.lock();
+                            segs.iter()
+                                .rev()
+                                .filter(|s| s.source == opposite)
+                                .find(|s| timestamp_ms.abs_diff(s.timestamp_ms) < 3000)
+                                .map(|prev| jaccard_bigrams(&prev.text, &text) >= 0.70)
+                                .unwrap_or(false)
+                        } else {
+                            false
+                        };
+
+                        if is_duplicate || is_cross_dup {
                             log::debug!(
-                                "Segment deduped (source={}): {:?}",
-                                source,
+                                "Segment deduped (source={}, cross={}): {:?}",
+                                source, is_cross_dup,
                                 &text[..text.len().min(50)]
                             );
-                            let _ = app.emit("transcription-processing", false);
+                            let _ = app.emit("transcription-processing", serde_json::json!({
+                                "active": false,
+                                "source": null
+                            }));
                             return false;
                         }
 
