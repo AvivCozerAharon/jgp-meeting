@@ -122,6 +122,19 @@ impl Default for Meeting {
     }
 }
 
+// ─── CalibrationSnapshot ──────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CalibrationSnapshot {
+    pub name: String,
+    pub created_at: String,
+    pub mic_auto_gain: bool,
+    pub mic_gain_max: f32,
+    pub mic_silence_threshold: f32,
+    pub mic_noise_gate_ratio: f32,
+    pub mic_noise_gate_hold_secs: f32,
+}
+
 // ─── AppSettings ──────────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -267,6 +280,10 @@ pub struct AppSettings {
     /// Empresa associada à reunião: "jgp" | "regia" | None
     #[serde(default)]
     pub company: Option<String>,
+
+    /// Perfis de calibração salvos pelo usuário (max 3).
+    #[serde(default)]
+    pub calibration_snapshots: Vec<CalibrationSnapshot>,
 }
 
 fn default_hotkey() -> String {
@@ -374,6 +391,7 @@ impl AppSettings {
             jgrc_responsible_id: String::new(),
             setup_done: false,
             company: None,
+            calibration_snapshots: vec![],
         }
     }
 }
