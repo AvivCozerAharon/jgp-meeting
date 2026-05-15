@@ -164,6 +164,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ className, activeT
   const [showTagManager, setShowTagManager] = useState(false);
   const [showMicTuner, setShowMicTuner] = useState(false);
   const [quickRecalibrating, setQuickRecalibrating] = useState(false);
+  const [quickRecalError, setQuickRecalError] = useState<string | null>(null);
   const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isFirstLoad = useRef(true);
 
@@ -216,7 +217,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ className, activeT
     const existing = settings.calibration_snapshots ?? [];
     const updated = [...existing, snapshot].slice(-3);
     updateSetting("calibration_snapshots", updated);
-  }, [settings.calibration_snapshots, updateSetting]);
+  }, [updateSetting]);
 
   const handleRestoreSnapshot = useCallback((snap: CalibrationSnapshot) => {
     updateSetting("mic_auto_gain", snap.mic_auto_gain);
@@ -228,11 +229,13 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ className, activeT
 
   const handleQuickRecal = useCallback(async () => {
     setQuickRecalibrating(true);
+    setQuickRecalError(null);
     try {
       const result = await invoke<{ avg_rms: number }>("measure_ambient_noise");
       const newThreshold = Math.min(0.025, Math.max(0.001, result.avg_rms * 2.5));
       updateSetting("mic_silence_threshold", Math.round(newThreshold * 10000) / 10000);
     } catch (e) {
+      setQuickRecalError("Não foi possível medir o ambiente. Tente novamente.");
       console.error("Quick recal failed:", e);
     } finally {
       setQuickRecalibrating(false);
@@ -367,9 +370,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ className, activeT
             <div className="mt-3 space-y-2">
               {(settings.calibration_snapshots ?? []).length > 0 && (
                 <div className="space-y-1.5">
-                  {(settings.calibration_snapshots ?? []).map((snap, i) => (
+                  {(settings.calibration_snapshots ?? []).map((snap) => (
                     <div
-                      key={i}
+                      key={`${snap.created_at}-${snap.name}`}
                       className="flex items-center justify-between px-3 py-2 rounded-xl bg-surface-50 dark:bg-surface-800/50 border border-surface-100 dark:border-surface-700/50"
                     >
                       <div>
@@ -424,6 +427,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ className, activeT
                   {quickRecalibrating ? "Medindo..." : "Ajuste rápido"}
                 </button>
               </div>
+              {quickRecalError && (
+                <p className="text-xs text-red-500 dark:text-red-400 mt-1">{quickRecalError}</p>
+              )}
             </div>
           )}
         </div>
