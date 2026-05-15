@@ -27,9 +27,11 @@ import {
   Unplug,
   BookOpen,
   SlidersHorizontal,
+  Loader2,
+  Zap,
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
-import type { AppSettings, AudioDevice, MeetingType } from "@/types";
+import type { AppSettings, AudioDevice, MeetingType, CalibrationSnapshot } from "@/types";
 import { useTheme } from "@/hooks/useTheme";
 import type { Theme } from "@/hooks/useTheme";
 import { MEETING_TYPE_LABELS, MEETING_TYPE_ICONS } from "@/types";
@@ -161,6 +163,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ className, activeT
   const [saveError, setSaveError] = useState<string | null>(null);
   const [showTagManager, setShowTagManager] = useState(false);
   const [showMicTuner, setShowMicTuner] = useState(false);
+  const [quickRecalibrating, setQuickRecalibrating] = useState(false);
   const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isFirstLoad = useRef(true);
 
@@ -208,6 +211,33 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ className, activeT
   const updateSetting = <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => {
     setSettings((prev) => ({ ...prev, [key]: value }));
   };
+
+  const handleSaveSnapshot = useCallback((snapshot: CalibrationSnapshot) => {
+    const existing = settings.calibration_snapshots ?? [];
+    const updated = [...existing, snapshot].slice(-3);
+    updateSetting("calibration_snapshots", updated);
+  }, [settings.calibration_snapshots, updateSetting]);
+
+  const handleRestoreSnapshot = useCallback((snap: CalibrationSnapshot) => {
+    updateSetting("mic_auto_gain", snap.mic_auto_gain);
+    updateSetting("mic_gain_max", snap.mic_gain_max);
+    updateSetting("mic_silence_threshold", snap.mic_silence_threshold);
+    updateSetting("mic_noise_gate_ratio", snap.mic_noise_gate_ratio);
+    updateSetting("mic_noise_gate_hold_secs", snap.mic_noise_gate_hold_secs);
+  }, [updateSetting]);
+
+  const handleQuickRecal = useCallback(async () => {
+    setQuickRecalibrating(true);
+    try {
+      const result = await invoke<{ avg_rms: number }>("measure_ambient_noise");
+      const newThreshold = Math.min(0.025, Math.max(0.001, result.avg_rms * 2.5));
+      updateSetting("mic_silence_threshold", Math.round(newThreshold * 10000) / 10000);
+    } catch (e) {
+      console.error("Quick recal failed:", e);
+    } finally {
+      setQuickRecalibrating(false);
+    }
+  }, [updateSetting]);
 
   if (isLoading) {
     return (
@@ -334,19 +364,67 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ className, activeT
           )}
 
           {settings.capture_microphone && (
-            <button
-              type="button"
-              onClick={() => setShowMicTuner(true)}
-              className={clsx(
-                "mt-3 w-full flex items-center justify-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold transition-all",
-                "bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
-                "border border-emerald-200 dark:border-emerald-500/20 hover:bg-emerald-100 dark:hover:bg-emerald-500/20",
-                "active:scale-[0.98]"
+            <div className="mt-3 space-y-2">
+              {(settings.calibration_snapshots ?? []).length > 0 && (
+                <div className="space-y-1.5">
+                  {(settings.calibration_snapshots ?? []).map((snap, i) => (
+                    <div
+                      key={i}
+                      className="flex items-center justify-between px-3 py-2 rounded-xl bg-surface-50 dark:bg-surface-800/50 border border-surface-100 dark:border-surface-700/50"
+                    >
+                      <div>
+                        <p className="text-xs font-semibold text-surface-700 dark:text-surface-200">
+                          {snap.name}
+                        </p>
+                        <p className="text-[10px] text-surface-400">
+                          {new Date(snap.created_at).toLocaleDateString("pt-BR")}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleRestoreSnapshot(snap)}
+                        className="text-xs font-semibold text-primary-500 hover:text-primary-600 transition-colors"
+                      >
+                        Restaurar
+                      </button>
+                    </div>
+                  ))}
+                </div>
               )}
-            >
-              <SlidersHorizontal className="w-3.5 h-3.5" />
-              Calibrar microfone
-            </button>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowMicTuner(true)}
+                  className={clsx(
+                    "flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold transition-all",
+                    "bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
+                    "border border-emerald-200 dark:border-emerald-500/20 hover:bg-emerald-100 dark:hover:bg-emerald-500/20",
+                    "active:scale-[0.98]"
+                  )}
+                >
+                  <SlidersHorizontal className="w-3.5 h-3.5" />
+                  Calibrar microfone
+                </button>
+                <button
+                  type="button"
+                  onClick={handleQuickRecal}
+                  disabled={quickRecalibrating}
+                  className={clsx(
+                    "flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold transition-all",
+                    "bg-surface-50 dark:bg-surface-800 text-surface-600 dark:text-surface-300",
+                    "border border-surface-200 dark:border-surface-700 hover:bg-surface-100 dark:hover:bg-surface-700",
+                    "active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
+                  )}
+                >
+                  {quickRecalibrating ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Zap className="w-3.5 h-3.5" />
+                  )}
+                  {quickRecalibrating ? "Medindo..." : "Ajuste rápido"}
+                </button>
+              </div>
+            </div>
           )}
         </div>
 
@@ -987,6 +1065,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ className, activeT
               updateSetting(key, patch[key] as AppSettings[typeof key]);
             });
           }}
+          onSaveSnapshot={handleSaveSnapshot}
           onClose={() => setShowMicTuner(false)}
         />
       )}
