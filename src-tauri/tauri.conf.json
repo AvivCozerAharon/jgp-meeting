@@ -42,5 +42,13 @@
         "installMode": "currentUser"
       }
     }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "PLACEHOLDER_REPLACE_WITH_REAL_PUBKEY",
+      "endpoints": [
+        "https://github.com/AvivJGP/jgp-meeting/releases/latest/download/latest.json"
+      ]
+    }
   }
 }
