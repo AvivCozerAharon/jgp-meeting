@@ -1,39 +1,82 @@
-// App.tsx
-// Componente raiz do JGP Meeting.
-// Gerencia a navegação entre páginas, o estado global e o tema.
-//
-// IMPORTANTE: O MainPage é mantido SEMPRE montado (com display:none quando
-// inativo) para preservar os hooks de captura, transcrição e seus listeners
-// durante a navegação. Sem isso, navegar para Histórico/Config mataria o
-// useAudioCapture e a gravação ficaria dessincronizada.
-
 import { useState, useCallback, useEffect } from "react";
 import { Navigation } from "@/components/Navigation";
 import { MainPage } from "@/pages/MainPage";
 import { HistoryPage } from "@/pages/HistoryPage";
 import { SettingsPage } from "@/pages/SettingsPage";
 import { SetupWizard } from "@/components/SetupWizard";
+import { UpdateBanner } from "@/components/UpdateBanner";
 import type { AppPage } from "@/types";
 import { useDraining } from "@/hooks/useDraining";
 import { ThemeContext, useThemeProvider } from "@/hooks/useTheme";
 import { getSettings } from "@/services/storageService";
 
+interface UpdateInfo {
+  version: string;
+  notes: string;
+}
+
 function App() {
   const [currentPage, setCurrentPage] = useState<AppPage>("main");
-  // Estado global de draining (transcrição pós-stop)
   const drainingState = useDraining();
-  // Tema (dark/light/system)
   const themeValue = useThemeProvider();
-
-  // Estado de gravação vindo do MainPage (via callback)
   const [isRecording, setIsRecording] = useState(false);
-
-  // Wizard de configuração inicial
   const [showWizard, setShowWizard] = useState(false);
+  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
+  const [installing, setInstalling] = useState(false);
+  const [installProgress, setInstallProgress] = useState<number | null>(null);
+  const [updateHandle, setUpdateHandle] = useState<{
+    downloadAndInstall: (cb: (e: { event: string; data: { chunkLength?: number; contentLength?: number } }) => void) => Promise<void>;
+  } | null>(null);
+
   useEffect(() => {
     getSettings()
       .then((s) => { if (!s.setup_done) setShowWizard(true); })
       .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const checkUpdate = async () => {
+      try {
+        const { check } = await import("@tauri-apps/plugin-updater");
+        const update = await check();
+        if (!cancelled && update?.available) {
+          setUpdateInfo({ version: update.version, notes: update.body ?? "" });
+          setUpdateHandle(update as typeof updateHandle);
+        }
+      } catch {
+        // Silent fail — no internet or update server unavailable
+      }
+    };
+    checkUpdate();
+    return () => { cancelled = true; };
+  }, []);
+
+  const handleInstall = useCallback(async () => {
+    if (!updateHandle) return;
+    setInstalling(true);
+    setInstallProgress(0);
+    try {
+      let downloaded = 0;
+      let total = 0;
+      await updateHandle.downloadAndInstall((event) => {
+        if (event.event === "Started") {
+          total = event.data.contentLength ?? 0;
+        } else if (event.event === "Progress") {
+          downloaded += event.data.chunkLength ?? 0;
+          if (total > 0) setInstallProgress(Math.round((downloaded / total) * 100));
+        }
+      });
+      const { relaunch } = await import("@tauri-apps/plugin-process");
+      await relaunch();
+    } catch {
+      setInstalling(false);
+      setInstallProgress(null);
+    }
+  }, [updateHandle]);
+
+  const handleDismissUpdate = useCallback(() => {
+    setUpdateInfo(null);
   }, []);
 
   const handleNavigate = useCallback((page: AppPage) => {
@@ -48,7 +91,6 @@ function App() {
     <ThemeContext.Provider value={themeValue}>
       {showWizard && <SetupWizard onComplete={() => setShowWizard(false)} />}
       <div className="flex h-screen w-screen overflow-hidden bg-surface-50 dark:bg-[#0c0f17]">
-        {/* Sidebar de navegação */}
         <Navigation
           currentPage={currentPage}
           onNavigate={handleNavigate}
@@ -59,13 +101,18 @@ function App() {
           drainingTotal={drainingState.total}
         />
 
-        {/* Área de conteúdo principal */}
         <main className="flex-1 flex flex-col overflow-hidden">
-          {/*
-            MainPage fica SEMPRE montado para preservar os hooks de captura
-            e transcrição. Quando não é a página ativa, fica invisível com
-            display:none (o React mantém o DOM e os hooks vivos).
-          */}
+          {updateInfo && (
+            <UpdateBanner
+              version={updateInfo.version}
+              notes={updateInfo.notes}
+              onInstall={handleInstall}
+              onDismiss={handleDismissUpdate}
+              installing={installing}
+              progress={installProgress}
+            />
+          )}
+
           <div
             className="flex-1 flex flex-col overflow-hidden"
             style={{ display: currentPage === "main" ? "flex" : "none" }}
