@@ -291,12 +291,12 @@ pub async fn start_capture(
                 }
             };
 
-            // Build accumulated context: last 50 words of transcript so far + user's static prompt
+            // Build accumulated context: last 120 words of transcript so far + user's static prompt
             let app_state = app.state::<AppState>();
             let accumulated = app_state.transcript.load();
             let context_words: String = {
                 let words: Vec<&str> = accumulated.split_whitespace().collect();
-                let start = words.len().saturating_sub(50);
+                let start = words.len().saturating_sub(120);
                 words[start..].join(" ")
             };
             let glossary_part: Option<String> = {
