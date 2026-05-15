@@ -6,6 +6,7 @@ import { SettingsPage } from "@/pages/SettingsPage";
 import { SetupWizard } from "@/components/SetupWizard";
 import { UpdateBanner } from "@/components/UpdateBanner";
 import type { AppPage } from "@/types";
+import type { Update } from "@tauri-apps/plugin-updater";
 import { useDraining } from "@/hooks/useDraining";
 import { ThemeContext, useThemeProvider } from "@/hooks/useTheme";
 import { getSettings } from "@/services/storageService";
@@ -24,9 +25,7 @@ function App() {
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
   const [installing, setInstalling] = useState(false);
   const [installProgress, setInstallProgress] = useState<number | null>(null);
-  const [updateHandle, setUpdateHandle] = useState<{
-    downloadAndInstall: (cb: (e: { event: string; data: { chunkLength?: number; contentLength?: number } }) => void) => Promise<void>;
-  } | null>(null);
+  const [updateHandle, setUpdateHandle] = useState<Update | null>(null);
 
   useEffect(() => {
     getSettings()
@@ -42,7 +41,7 @@ function App() {
         const update = await check();
         if (!cancelled && update?.available) {
           setUpdateInfo({ version: update.version, notes: update.body ?? "" });
-          setUpdateHandle(update as typeof updateHandle);
+          setUpdateHandle(update);
         }
       } catch {
         // Silent fail — no internet or update server unavailable
