@@ -6,12 +6,13 @@ import {
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AppSettings } from "@/types";
+import type { AppSettings, CalibrationSnapshot } from "@/types";
 import { MicLevelMeter } from "./MicLevelMeter";
 
 interface MicCalibrationWizardProps {
   settings: AppSettings;
   onApply: (patch: Partial<AppSettings>) => void;
+  onSaveSnapshot?: (snapshot: CalibrationSnapshot) => void;
   onClose: () => void;
 }
 
@@ -58,8 +59,9 @@ type Step =
   | "summary"
   | "error";
 
-export function MicCalibrationWizard({ settings, onApply, onClose }: MicCalibrationWizardProps) {
+export function MicCalibrationWizard({ settings, onApply, onSaveSnapshot, onClose }: MicCalibrationWizardProps) {
   const [step, setStep] = useState<Step>("pre-check");
+  const [profileName, setProfileName] = useState("");
   const [micLevel, setMicLevel] = useState(0);
   const [countdown, setCountdown] = useState(COUNTDOWN_SECS);
   const [round, setRound] = useState(1);
@@ -212,8 +214,19 @@ export function MicCalibrationWizard({ settings, onApply, onClose }: MicCalibrat
       mic_noise_gate_ratio: calibration.mic_noise_gate_ratio,
       mic_noise_gate_hold_secs: calibration.mic_noise_gate_hold_secs,
     });
+    if (profileName.trim() && calibration && onSaveSnapshot) {
+      onSaveSnapshot({
+        name: profileName.trim(),
+        created_at: new Date().toISOString(),
+        mic_auto_gain: calibration.mic_auto_gain,
+        mic_gain_max: calibration.mic_gain_max,
+        mic_silence_threshold: calibration.mic_silence_threshold,
+        mic_noise_gate_ratio: calibration.mic_noise_gate_ratio,
+        mic_noise_gate_hold_secs: calibration.mic_noise_gate_hold_secs,
+      });
+    }
     onClose();
-  }, [calibration, onApply, onClose]);
+  }, [calibration, profileName, onApply, onSaveSnapshot, onClose]);
 
   const isRecording =
     step === "speech-recording" ||
@@ -526,6 +539,19 @@ export function MicCalibrationWizard({ settings, onApply, onClose }: MicCalibrat
                 Resumo das alterações
               </p>
               <SummaryDiff current={settings} recommended={calibration} />
+              <div>
+                <label className="block text-xs font-medium text-surface-500 dark:text-surface-400 mb-1">
+                  Salvar como perfil (opcional)
+                </label>
+                <input
+                  type="text"
+                  value={profileName}
+                  onChange={(e) => setProfileName(e.target.value)}
+                  placeholder="ex: Escritório, Casa, Reunião fora"
+                  maxLength={40}
+                  className="w-full px-3 py-2 rounded-xl text-sm bg-surface-50 dark:bg-surface-800 border border-surface-200 dark:border-surface-700 text-surface-800 dark:text-surface-100 placeholder-surface-400 focus:outline-none focus:ring-2 focus:ring-primary-400"
+                />
+              </div>
               <div className="flex gap-3 pt-2">
                 <button
                   onClick={onClose}
