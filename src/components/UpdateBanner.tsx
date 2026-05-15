@@ -11,14 +11,14 @@ interface UpdateBannerProps {
   progress: number | null;
 }
 
-export const UpdateBanner: React.FC<UpdateBannerProps> = ({
+export function UpdateBanner({
   version,
   notes,
   onInstall,
   onDismiss,
   installing,
   progress,
-}) => {
+}: UpdateBannerProps) {
   const [notesOpen, setNotesOpen] = useState(false);
 
   const noteLines = notes
@@ -104,4 +104,4 @@ export const UpdateBanner: React.FC<UpdateBannerProps> = ({
       </div>
     </div>
   );
-};
+}
