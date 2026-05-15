@@ -435,7 +435,10 @@ pub async fn start_capture(
         // Declared here so chunks dequeued at the moment of stop are not dropped.
         let mut pre_drain: Vec<AudioChunk> = Vec::new();
         loop {
-            // Verifica sinal de stop (sem bloquear)
+            // Two stop-detection paths:
+            // - This try_recv() handles stop when no chunk is in flight (recv_timeout expires normally).
+            // - The tokio::select! stop arm below handles stop while blocked waiting for a semaphore permit.
+            // Both are needed; removing either creates a stop-delay window.
             if stop_rx.try_recv().is_ok() {
                 log::info!("Sinal de stop recebido — aguardando thread de áudio finalizar...");
                 break;
@@ -459,9 +462,10 @@ pub async fn start_capture(
                                 {
                                     break;
                                 }
-                                tokio::task::yield_now().await;
+                                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
                             }
                         } => {
+                            // Preserve the chunk already dequeued from chunk_rx — it would otherwise be dropped.
                             pre_drain.push(chunk);
                             break;
                         }
