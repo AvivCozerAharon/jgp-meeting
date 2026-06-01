@@ -48,6 +48,30 @@ fn is_known_filler(text: &str) -> bool {
     )
 }
 
+/// Detecta o hallucination de loop do Whisper: uma frase de 1–4 palavras repetida
+/// 4+ vezes consecutivas. Ocorre quando o áudio fica ruim/silencioso no final de
+/// um chunk e o Whisper fica preso nos termos do prompt/glossário.
+fn has_repetition_loop(text: &str) -> bool {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    let n = words.len();
+    if n < 8 { return false; }
+
+    for phrase_len in 1..=4usize {
+        if n < phrase_len * 4 { continue; }
+        for start in 0..=n.saturating_sub(phrase_len * 4) {
+            let phrase = &words[start..start + phrase_len];
+            let mut reps = 0usize;
+            let mut pos = start + phrase_len;
+            while pos + phrase_len <= n && &words[pos..pos + phrase_len] == phrase {
+                reps += 1;
+                pos += phrase_len;
+                if reps >= 3 { return true; } // frase aparece 4+ vezes seguidas
+            }
+        }
+    }
+    false
+}
+
 /// Verifica se o texto bate em algum padrão de hallucination configurável.
 /// Match é case-insensitive substring.
 fn matches_hallucination_pattern(text: &str, patterns: &[String]) -> bool {
@@ -395,6 +419,9 @@ pub async fn start_capture(
                         false
                     } else if matches_hallucination_pattern(&text, &hallucination_patterns) {
                         log::debug!("Hallucination pattern descartado: {:?}", &text[..text.len().min(60)]);
+                        false
+                    } else if has_repetition_loop(&text) {
+                        log::debug!("Repetition loop descartado: {:?}", &text[..text.len().min(80)]);
                         false
                     } else {
                     let is_filler = chunk.source == AudioSource::Microphone && {
