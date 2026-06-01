@@ -171,6 +171,14 @@ pub async fn start_capture(
     let settings = storage::load_settings()
         .map_err(|e| format!("Erro ao carregar configurações: {e}"))?;
 
+    // Resolve silero model path from bundled Tauri resources
+    let silero_path: Option<std::path::PathBuf> = app
+        .path()
+        .resource_dir()
+        .ok()
+        .map(|p| p.join("silero_vad.onnx"))
+        .filter(|p| p.exists());
+
     let provider = settings.transcription_provider.as_str();
 
     match provider {
@@ -218,7 +226,7 @@ pub async fn start_capture(
         silence_threshold: settings.mic_silence_threshold,
         auto_gain: settings.mic_auto_gain,
         gain_max: settings.mic_gain_max,
-        silero_model_path: None,
+        silero_model_path: silero_path,
     };
     audio::start_capture(
         capture_arc,
@@ -640,6 +648,20 @@ pub async fn start_capture(
             let mic   = *cap_level.mic_level.lock();
             let _ = app_level.emit("audio-level", level);
             let _ = app_level.emit("mic-level", mic);
+
+            // Emit calibration-done once when the mic thread finishes calibration
+            if let Some(cal) = cap_level.calibration_result.lock().take() {
+                let _ = app_level.emit("calibration-done", serde_json::json!({
+                    "noise_floor": cal.noise_floor,
+                    "speech_floor": cal.speech_floor,
+                    "threshold": cal.threshold,
+                }));
+                log::info!(
+                    "Evento calibration-done emitido (threshold={:.4})",
+                    cal.threshold
+                );
+            }
+
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
     });
