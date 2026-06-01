@@ -15,6 +15,8 @@ interface MicCalibrationWizardProps {
   onApply: (patch: Partial<AppSettings>) => void;
   onSaveSnapshot?: (snapshot: CalibrationSnapshot) => void;
   onClose: () => void;
+  /** Disparado APENAS após calibração bem-sucedida (apply). Cancel/close NÃO dispara. */
+  onComplete?: () => void;
 }
 
 interface CalibrationResult {
@@ -65,7 +67,7 @@ type Step =
   | "summary"
   | "error";
 
-export function MicCalibrationWizard({ settings, onApply, onSaveSnapshot, onClose }: MicCalibrationWizardProps) {
+export function MicCalibrationWizard({ settings, onApply, onSaveSnapshot, onClose, onComplete }: MicCalibrationWizardProps) {
   const [step, setStep] = useState<Step>("pre-check");
   const [profileName, setProfileName] = useState("");
   const [countdown, setCountdown] = useState(COUNTDOWN_SECS);
@@ -217,8 +219,9 @@ export function MicCalibrationWizard({ settings, onApply, onSaveSnapshot, onClos
         mic_noise_gate_hold_secs: calibration.mic_noise_gate_hold_secs,
       });
     }
+    onComplete?.();
     onClose();
-  }, [calibration, profileName, onApply, onSaveSnapshot, onClose]);
+  }, [calibration, profileName, onApply, onSaveSnapshot, onClose, onComplete]);
 
   const isRecording =
     step === "speech-recording" ||
