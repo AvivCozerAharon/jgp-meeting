@@ -246,6 +246,12 @@ pub struct AppSettings {
     #[serde(default)]
     pub whisper_glossary: String,
 
+    /// Padrões (substring, case-insensitive) que indicam hallucination do Whisper.
+    /// Se qualquer padrão aparecer no texto transcrito, o segmento é descartado.
+    /// Default inclui padrões comuns em PT-BR e EN (ex: "se inscreva", "thanks for watching").
+    #[serde(default = "default_hallucination_patterns")]
+    pub hallucination_patterns: Vec<String>,
+
     // ─── Integração JGRC ──────────────────────────────────────────────────────
     /// URL base do JGRC (ex: "http://localhost:3000")
     #[serde(default)]
@@ -342,6 +348,38 @@ fn default_language() -> String {
     "pt".to_string()
 }
 
+fn default_hallucination_patterns() -> Vec<String> {
+    vec![
+        "inscrever no canal".into(),
+        "ativar as notificac".into(),
+        "se inscreva".into(),
+        "obrigado por assistir".into(),
+        "thanks for watching".into(),
+        "subscribe to the channel".into(),
+        "don't forget to subscribe".into(),
+        "like and subscribe".into(),
+        "smash the like button".into(),
+        "leave a comment".into(),
+        "click the link".into(),
+        "check out the description".into(),
+        "follow me on".into(),
+        "background music".into(),
+        "no copyright".into(),
+        "royalty free".into(),
+        "(applause)".into(),
+        "(laughter)".into(),
+        "(music)".into(),
+        "sponsored by".into(),
+        "vou me despedir".into(),
+        "ate o proximo video".into(),
+        "nos vemos no proximo".into(),
+        "obrigado pela atencao".into(),
+        "muito obrigado a todos".into(),
+        "esse video foi".into(),
+        "esse e o meu canal".into(),
+    ]
+}
+
 impl Default for AppSettings {
     fn default() -> Self {
         Self::with_defaults()
@@ -381,6 +419,7 @@ impl AppSettings {
                 yield, carry, valuation, follow-on, IPO, CVM, B3"
                 .to_string(),
             whisper_glossary: "JGP, Régia, André Jakuski, FIP, CDI, IPCA, IBOV, Ibovespa, JGP Strategy, JGP Credit, JGP Hedge, benchmark, alocação, gestora, fundo multimercado, renda fixa, renda variável, B3, CVM, Selic, IRR, NAV, drawdown, volatilidade, follow-on, debenture, LCI, LCA".to_string(),
+            hallucination_patterns: default_hallucination_patterns(),
             theme: "dark".to_string(),
             jgrc_url: String::new(),
             jgrc_email: String::new(),
