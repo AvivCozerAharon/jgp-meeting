@@ -1162,11 +1162,16 @@ pub async fn compute_calibration(
         99.0
     };
 
-    let (round_passed, failure_reason): (bool, Option<&str>) = if speech_peak < 0.005 {
+    // Limiar para considerar o microfone "mudo" (peak) e o ambiente "silencioso o
+    // suficiente" pra suprimir falha por SNR. Ambos compartilham o mesmo valor:
+    // abaixo desse pico/RMS o sinal é indistinguível de ruído de quantização.
+    const MIC_SILENCE_FLOOR: f32 = 0.005;
+
+    let (round_passed, failure_reason): (bool, Option<&str>) = if speech_peak < MIC_SILENCE_FLOOR {
         (false, Some("Mic_Mute"))
     } else if speech_peak > 0.95 {
         (false, Some("Clipping"))
-    } else if snr < 6.0 && silence_rms > 0.005 {
+    } else if snr < 6.0 && silence_rms > MIC_SILENCE_FLOOR {
         (false, Some("Noise"))
     } else {
         (true, None)
