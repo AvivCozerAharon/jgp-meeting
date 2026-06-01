@@ -552,11 +552,18 @@ pub async fn start_capture(
         }
 
         // ── Fase 3: Processar chunks pendentes (draining) ────────────────
+        let drain_meeting_id: Option<String> = app_clone
+            .state::<AppState>()
+            .draining_meeting_id
+            .lock()
+            .clone();
+
         if !pre_drain.is_empty() {
             let total = pre_drain.len();
             let _ = app_clone.emit("transcription-draining", serde_json::json!({
                 "pending": total,
-                "total": total
+                "total": total,
+                "meeting_id": drain_meeting_id,
             }));
             log::info!("Draining: processando {} chunks pendentes...", total);
 
@@ -573,17 +580,19 @@ pub async fn start_capture(
                 let remaining = total - (i + 1);
                 let _ = app_clone.emit("transcription-draining", serde_json::json!({
                     "pending": remaining,
-                    "total": total
+                    "total": total,
+                    "meeting_id": drain_meeting_id,
                 }));
                 log::info!("Drain: {}/{} processados", i + 1, total);
             }
         }
 
         // ── Fase 4: Finalização ──────────────────────────────────────────
-        // Sinaliza que o draining terminou
+        // Sinaliza que o draining terminou (meeting_id: null libera o card na UI)
         let _ = app_clone.emit("transcription-draining", serde_json::json!({
             "pending": 0,
-            "total": 0
+            "total": 0,
+            "meeting_id": serde_json::Value::Null,
         }));
 
         // Re-salva a reunião com a transcrição completa (incluindo chunks drenados)
@@ -690,6 +699,14 @@ pub async fn stop_capture(
 
     // Armazena o ID da reunião para o worker re-salvar após draining
     *state.draining_meeting_id.lock() = Some(id.clone());
+
+    // Emite evento inicial de draining para a UI saber qual reunião travar.
+    // Counts intermediários virão dos emits do worker (Fase 3).
+    let _ = app.emit("transcription-draining", serde_json::json!({
+        "pending": 1,
+        "total": 1,
+        "meeting_id": id.clone(),
+    }));
 
     // Feature 15: auto-resumo em background
     let settings = storage::load_settings().unwrap_or_default();

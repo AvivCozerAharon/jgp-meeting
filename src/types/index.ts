@@ -204,4 +204,6 @@ export type TranscriptionErrorPayload = string;
 export interface TranscriptionDrainingPayload {
   pending: number;
   total: number;
+  /** ID da reunião sendo drenada. `null` quando o drain terminou. */
+  meeting_id?: string | null;
 }

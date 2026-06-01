@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { useMeetingHistory } from "@/hooks/useMeetingHistory";
+import { useDraining } from "@/hooks/useDraining";
 import { MeetingCard } from "@/components/MeetingCard";
 import { SummaryPanel } from "@/components/SummaryPanel";
 import { LoadingOverlay } from "@/components/LoadingSpinner";
@@ -36,6 +37,12 @@ import type { Meeting, AppSettings, Tag } from "@/types";
 export const HistoryPage: React.FC = () => {
   const [state, actions] = useMeetingHistory();
   const { meetings, allMeetings, isLoading, selectedMeeting, isGeneratingSummary, error, searchQuery } = state;
+  const draining = useDraining();
+
+  const handleOpenMeeting = (id: string) => {
+    if (draining.isDraining && draining.meetingId === id) return;
+    actions.selectMeeting(id);
+  };
 
   const [allTags, setAllTags] = useState<Tag[]>([]);
   const [activeTagFilter, setActiveTagFilter] = useState<string | null>(null);
@@ -185,11 +192,13 @@ export const HistoryPage: React.FC = () => {
               <MeetingCard
                 key={meeting.id}
                 meeting={meeting}
-                onOpen={actions.selectMeeting}
+                onOpen={handleOpenMeeting}
                 onDelete={actions.remove}
                 onGenerateSummary={actions.generateSummary}
                 isGeneratingSummary={isGeneratingSummary}
                 allTags={allTags}
+                isDraining={draining.isDraining && draining.meetingId === meeting.id}
+                drainProgress={draining.progress}
               />
             ))}
           </div>

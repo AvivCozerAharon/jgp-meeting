@@ -23,6 +23,10 @@ interface MeetingCardProps {
   isGeneratingSummary?: boolean;
   className?: string;
   allTags?: Tag[];
+  /** Se esta reunião está sendo transcrita (drain ativo). Bloqueia abertura. */
+  isDraining?: boolean;
+  /** Progresso do drain (0–1) — mostrado no card quando isDraining=true. */
+  drainProgress?: number;
 }
 
 export const MeetingCard: React.FC<MeetingCardProps> = ({
@@ -33,6 +37,8 @@ export const MeetingCard: React.FC<MeetingCardProps> = ({
   isGeneratingSummary = false,
   className,
   allTags,
+  isDraining = false,
+  drainProgress = 0,
 }) => {
   const hasSummary = !!meeting.summary;
   const preview = transcriptPreview(meeting.transcript, 20);
@@ -59,18 +65,32 @@ export const MeetingCard: React.FC<MeetingCardProps> = ({
     onGenerateSummary?.(meeting.id);
   };
 
+  const drainPct = Math.round(Math.max(0, Math.min(1, drainProgress)) * 100);
+
   return (
     <div
+      role="button"
+      aria-disabled={isDraining}
+      aria-label={isDraining ? `${meeting.title} — transcrevendo, ${drainPct}%` : meeting.title}
+      title={isDraining ? "Aguarde — transcrição em andamento" : undefined}
       className={clsx(
-        "group cursor-pointer flex items-center gap-4 px-4 py-3 rounded-xl",
+        "group flex items-center gap-4 px-4 py-3 rounded-xl",
         "bg-white border border-surface-100",
-        "hover:bg-surface-50 hover:border-surface-200",
         "dark:bg-surface-800/40 dark:border-surface-700/40",
-        "dark:hover:bg-surface-800/70 dark:hover:border-surface-600/50",
         "transition-all duration-150",
+        isDraining
+          ? "opacity-60 cursor-not-allowed"
+          : [
+              "cursor-pointer",
+              "hover:bg-surface-50 hover:border-surface-200",
+              "dark:hover:bg-surface-800/70 dark:hover:border-surface-600/50",
+            ],
         className
       )}
-      onClick={() => onOpen(meeting.id)}
+      onClick={() => {
+        if (isDraining) return;
+        onOpen(meeting.id);
+      }}
     >
       {/* Título + preview */}
       <div className="flex-1 min-w-0">
@@ -78,6 +98,14 @@ export const MeetingCard: React.FC<MeetingCardProps> = ({
           <h3 className="font-semibold text-surface-800 dark:text-surface-200 truncate text-sm">
             {meeting.title}
           </h3>
+          {isDraining && (
+            <div className="flex-shrink-0 flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-amber-50 dark:bg-amber-500/10">
+              <Spinner size="xs" color="primary" />
+              <span className="text-[10px] font-medium text-amber-600 dark:text-amber-400">
+                Transcrevendo {drainPct}%
+              </span>
+            </div>
+          )}
           {hasSummary && (
             <div className="flex-shrink-0 flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-primary-50 dark:bg-primary-500/10">
               <CheckCircle2 className="w-2.5 h-2.5 text-primary-500" />

@@ -16,7 +16,12 @@
       "PowerShell(cargo check *)",
       "Bash(rtk read *)",
       "Bash(rtk wc *)",
-      "Bash(npm install *)"
+      "Bash(npm install *)",
+      "Bash(cargo test *)",
+      "Bash(git stash *)",
+      "Bash(git checkout *)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)"
     ]
   }
 }

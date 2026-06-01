@@ -16,6 +16,8 @@ export interface DrainingState {
   total: number;
   /** Progresso de 0 a 1 */
   progress: number;
+  /** ID da reunião sendo drenada (null quando não há drain). */
+  meetingId: string | null;
 }
 
 /**
@@ -33,11 +35,11 @@ export function useDraining(): DrainingState {
     let unlisten: (() => void) | null = null;
 
     listen<TranscriptionDrainingPayload>("transcription-draining", (event) => {
-      const { pending, total } = event.payload;
+      const { pending, total, meeting_id } = event.payload;
       if (pending === 0 && total === 0) {
         setDraining(null);
       } else {
-        setDraining({ pending, total });
+        setDraining({ pending, total, meeting_id: meeting_id ?? null });
       }
     })
       .then((fn) => {
@@ -51,7 +53,7 @@ export function useDraining(): DrainingState {
   }, []);
 
   if (!draining) {
-    return { isDraining: false, pending: 0, total: 0, progress: 1 };
+    return { isDraining: false, pending: 0, total: 0, progress: 1, meetingId: null };
   }
 
   const progress =
@@ -64,5 +66,6 @@ export function useDraining(): DrainingState {
     pending: draining.pending,
     total: draining.total,
     progress,
+    meetingId: draining.meeting_id ?? null,
   };
 }
