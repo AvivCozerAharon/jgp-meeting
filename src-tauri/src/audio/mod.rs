@@ -128,6 +128,9 @@ pub struct AudioCaptureState {
     pub current_level: parking_lot::Mutex<f32>,
     /// Feature 5: nível de áudio do microfone (separado do loopback)
     pub mic_level: parking_lot::Mutex<f32>,
+    /// Pico absoluto da janela mais recente do microfone — usado pelo wizard
+    /// de calibração para mostrar o ponteiro de pico instantâneo.
+    pub mic_peak: parking_lot::Mutex<f32>,
     /// Quando true, o áudio do microfone é silenciado (não misturado ao loopback)
     pub mic_muted: AtomicBool,
     /// Quando true, os chunks de áudio são descartados (transcrição pausada)
@@ -142,6 +145,7 @@ impl AudioCaptureState {
             is_capturing: AtomicBool::new(false),
             current_level: parking_lot::Mutex::new(0.0),
             mic_level: parking_lot::Mutex::new(0.0),
+            mic_peak: parking_lot::Mutex::new(0.0),
             mic_muted: AtomicBool::new(false),
             is_paused: AtomicBool::new(false),
             calibration_result: parking_lot::Mutex::new(None),
@@ -555,9 +559,14 @@ pub fn start_capture(
                             std::slice::from_raw_parts(p_data, num_frames as usize * mic_align);
                         let samples = bytes_to_f32(raw, mic_bps);
                         let rms = compute_rms(&samples);
+                        let peak = samples.iter().map(|s| s.abs()).fold(0.0f32, f32::max).min(1.0);
                         {
                             let mut lvl = state_mic.mic_level.lock();
                             *lvl = (*lvl * 0.7 + rms * 0.3).min(1.0);
+                        }
+                        {
+                            let mut pk = state_mic.mic_peak.lock();
+                            *pk = peak;
                         }
 
                         // Envia ao chunker — produz chunk em pausas naturais ou no max.

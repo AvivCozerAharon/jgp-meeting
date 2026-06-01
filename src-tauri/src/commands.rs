@@ -1075,8 +1075,12 @@ pub async fn record_calibration_phase(
     let app_emit = app.clone();
     let level_handle = tokio::spawn(async move {
         while cap_emit.is_capturing() {
-            let level = *cap_emit.mic_level.lock();
-            let _ = app_emit.emit("mic-test-level", level);
+            let rms = *cap_emit.mic_level.lock();
+            let peak = *cap_emit.mic_peak.lock();
+            let _ = app_emit.emit("mic-test-level", serde_json::json!({
+                "rms": rms,
+                "peak": peak,
+            }));
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
     });
@@ -1265,8 +1269,12 @@ pub async fn test_mic_transcription_phrase(
     let app_emit = app.clone();
     let level_handle = tokio::spawn(async move {
         while cap_emit.is_capturing() {
-            let level = *cap_emit.mic_level.lock();
-            let _ = app_emit.emit("mic-test-level", level);
+            let rms = *cap_emit.mic_level.lock();
+            let peak = *cap_emit.mic_peak.lock();
+            let _ = app_emit.emit("mic-test-level", serde_json::json!({
+                "rms": rms,
+                "peak": peak,
+            }));
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
     });
@@ -1413,8 +1421,12 @@ pub async fn test_mic_with_transcription(
     let app_emit = app.clone();
     let level_handle = tokio::spawn(async move {
         while cap_emit.is_capturing() {
-            let level = *cap_emit.mic_level.lock();
-            let _ = app_emit.emit("mic-test-level", level);
+            let rms = *cap_emit.mic_level.lock();
+            let peak = *cap_emit.mic_peak.lock();
+            let _ = app_emit.emit("mic-test-level", serde_json::json!({
+                "rms": rms,
+                "peak": peak,
+            }));
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
     });
