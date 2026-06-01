@@ -367,28 +367,17 @@ pub async fn start_capture(
             let app_state = app.state::<AppState>();
             let accumulated = app_state.transcript.load();
             let context_words = last_sentence_context(&accumulated);
-            let glossary_part: Option<String> = {
-                let terms: Vec<&str> = whisper_glossary
-                    .split([',', '\n'])
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .collect();
-                if terms.is_empty() { None } else { Some(terms.join(", ")) }
-            };
 
+            // Glossário removido do prompt: o Whisper trata o prompt como fala anterior,
+            // não como dicionário — enviar listas de termos causa echo e loops de hallucination.
             let effective_prompt: Option<String> = match (
-                glossary_part.as_deref(),
                 context_words.is_empty(),
                 whisper_prompt.is_empty(),
             ) {
-                (None,    true,  true)  => None,
-                (None,    true,  false) => Some(whisper_prompt.to_string()),
-                (None,    false, true)  => Some(context_words),
-                (None,    false, false) => Some(format!("{} {}", context_words, whisper_prompt)),
-                (Some(g), true,  true)  => Some(g.to_string()),
-                (Some(g), true,  false) => Some(format!("{} {}", g, whisper_prompt)),
-                (Some(g), false, true)  => Some(format!("{} {}", g, context_words)),
-                (Some(g), false, false) => Some(format!("{} {} {}", g, context_words, whisper_prompt)),
+                (true,  true)  => None,
+                (true,  false) => Some(whisper_prompt.to_string()),
+                (false, true)  => Some(context_words),
+                (false, false) => Some(format!("{} {}", context_words, whisper_prompt)),
             };
             let prompt_opt = effective_prompt.as_deref();
 
