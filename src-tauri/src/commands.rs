@@ -97,13 +97,22 @@ fn last_sentence_context(transcript: &str) -> String {
 
 /// Gate de qualidade baseado nas probabilidades retornadas pelo Whisper verbose_json.
 /// Retorna true se o resultado deve ser descartado.
-/// Thresholds: no_speech_prob > 0.6 (provavelmente silêncio/ruído),
-/// avg_logprob < -1.0 (confiança baixa, possivelmente hallucination).
+///
+/// Regras:
+/// - no_speech_prob sozinho só descarta acima de 0.85 (valor alto era falso-positivo frequente:
+///   Whisper calcula antes da transcrição, pode ser alto mesmo com fala real).
+/// - avg_logprob < -1.0 com no_speech_prob > 0.5 descarta (ambos os sinais ruins ao mesmo tempo).
+/// - avg_logprob < -1.0 sozinho ainda descarta (transcrição de baixa confiança sem fala detectada).
 fn is_low_quality_transcription(result: &transcription::TranscriptionResult) -> bool {
-    if result.no_speech_prob > 0.6 {
+    // no_speech_prob alto E avg_logprob baixo = claramente ruído/silêncio
+    if result.no_speech_prob > 0.5 && result.avg_logprob < -1.0 && result.avg_logprob != 0.0 {
         return true;
     }
-    // avg_logprob == 0.0 significa "sem segments" (resposta curta tipo Groq); não descarta por isso.
+    // no_speech_prob muito alto sozinho (≥ 0.85) = quase certamente não é fala
+    if result.no_speech_prob > 0.85 {
+        return true;
+    }
+    // avg_logprob muito baixo sozinho = hallucination provável
     if result.avg_logprob < -1.0 && result.avg_logprob != 0.0 {
         return true;
     }
