@@ -39,11 +39,61 @@ interface TranscriptionResult {
   diagnosis: string;
 }
 
-const PRESET_LABELS: Record<string, string> = {
+const EXPECTED_PHRASE_WORDS = 15; // "A reunião de alinhamento com o cliente começa às quatorze horas na sala de conferências." = 15 palavras
+
+const NOISE_GATE_LABELS: Record<"silent" | "meeting" | "auditorium", string> = {
   silent: "Ambiente silencioso",
   meeting: "Escritório",
   auditorium: "Sala barulhenta",
 };
+
+function currentPresetFromSettings(s: AppSettings): "silent" | "meeting" | "auditorium" {
+  const ratio = s.mic_noise_gate_ratio ?? 0;
+  return ratio === 0 ? "silent" : ratio <= 3 ? "meeting" : "auditorium";
+}
+
+/** Retorna 1–3 frases explicando o porquê das mudanças. Vazio se nada significativo mudou. */
+function explainChanges(current: AppSettings, rec: CalibrationResult): string[] {
+  const sentences: string[] = [];
+
+  const currentGain = current.mic_gain_max ?? 4;
+  const gainIncreasedAlot = rec.mic_gain_max > currentGain * 2;
+  const gainTurnedOn = rec.mic_auto_gain && !current.mic_auto_gain;
+  const gainDecreased = rec.mic_gain_max < currentGain;
+
+  if (gainTurnedOn || gainIncreasedAlot) {
+    sentences.push(
+      "Seu microfone estava captando volume baixo em relação ao ideal. Agora ele será amplificado automaticamente para ficar no nível certo, sem você precisar gritar."
+    );
+  } else if (gainDecreased) {
+    sentences.push(
+      "Seu microfone estava captando volume alto demais. Reduzimos a amplificação pra evitar distorção."
+    );
+  }
+
+  const currentPreset = currentPresetFromSettings(current);
+  if (rec.noise_gate_preset !== currentPreset) {
+    if (rec.noise_gate_preset === "auditorium") {
+      sentences.push(
+        "Como o ambiente tem ruído de fundo perceptível, ajustamos o filtro pra sala barulhenta — ele vai cortar sons fracos entre falas."
+      );
+    } else if (rec.noise_gate_preset === "silent") {
+      sentences.push(
+        "Seu ambiente está bem silencioso, então removemos quase todo o filtro de ruído pra captar até falas baixas."
+      );
+    }
+  }
+
+  const currentThreshold = current.mic_silence_threshold ?? 0.003;
+  const thresholdChangePct = Math.abs(rec.mic_silence_threshold - currentThreshold) / Math.max(currentThreshold, 0.001);
+  if (thresholdChangePct > 0.5) {
+    sentences.push(
+      "Ajustamos o corte de silêncio pro nível de ruído do seu ambiente — chunks silenciosos serão descartados antes da transcrição (economiza chamadas de API)."
+    );
+  }
+
+  return sentences;
+}
 
 const FAILURE_MESSAGES: Record<"Clipping" | "Noise", string> = {
   Clipping: "Você está muito perto do microfone. Recue um pouco e tente novamente.",
@@ -572,13 +622,35 @@ export function MicCalibrationWizard({ settings, onApply, onSaveSnapshot, onClos
             </div>
           )}
 
-          {/* summary */}
+          {/* summary — 3 blocos */}
           {step === "summary" && calibration && (
-            <div className="space-y-4">
-              <p className="text-sm font-semibold text-surface-800 dark:text-surface-100">
-                Resumo das alterações
-              </p>
-              <SummaryDiff current={settings} recommended={calibration} />
+            <div className="space-y-3">
+              {/* Bloco 1: Precisão estimada */}
+              {transcription && transcription.got !== "" ? (
+                <SummaryAccuracyBlock similarity={transcription.similarity} />
+              ) : (
+                <div className="p-4 rounded-xl bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/20">
+                  <div className="flex items-start gap-3">
+                    <AlertTriangle className="w-5 h-5 text-amber-500 mt-0.5 flex-shrink-0" />
+                    <div>
+                      <p className="text-sm font-semibold text-amber-800 dark:text-amber-300">
+                        Calibração aplicada sem teste de precisão
+                      </p>
+                      <p className="text-xs text-amber-700 dark:text-amber-400 mt-1">
+                        Recomendamos refazer o teste em ambiente mais silencioso quando possível.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Bloco 2: Antes → depois */}
+              <SummaryDiffBlock current={settings} recommended={calibration} />
+
+              {/* Bloco 3: Por quê */}
+              <SummaryReasonsBlock current={settings} recommended={calibration} />
+
+              {/* Perfil opcional */}
               <div>
                 <label className="block text-xs font-medium text-surface-500 dark:text-surface-400 mb-1">
                   Salvar como perfil (opcional)
@@ -592,6 +664,7 @@ export function MicCalibrationWizard({ settings, onApply, onSaveSnapshot, onClos
                   className="w-full px-3 py-2 rounded-xl text-sm bg-surface-50 dark:bg-surface-800 border border-surface-200 dark:border-surface-700 text-surface-800 dark:text-surface-100 placeholder-surface-400 focus:outline-none focus:ring-2 focus:ring-primary-400"
                 />
               </div>
+
               <div className="flex gap-3 pt-2">
                 <button
                   onClick={onClose}
@@ -661,51 +734,153 @@ function StepDot({ active, done, label }: { active: boolean; done: boolean; labe
   );
 }
 
-function SummaryDiff({
-  current,
-  recommended,
-}: {
-  current: AppSettings;
-  recommended: CalibrationResult;
-}) {
-  const lines: string[] = [];
+function SummaryAccuracyBlock({ similarity }: { similarity: number }) {
+  const pct = Math.round(similarity * 100);
+  const correctWords = Math.round(similarity * EXPECTED_PHRASE_WORDS);
+  const color =
+    pct >= 85 ? "emerald" : pct >= 60 ? "amber" : "red";
 
-  if (recommended.mic_auto_gain && !current.mic_auto_gain) {
-    lines.push("Amplificação automática ativada");
-  } else if (!recommended.mic_auto_gain && current.mic_auto_gain) {
-    lines.push("Amplificação automática desativada (microfone já está alto o suficiente)");
+  return (
+    <div
+      className={clsx(
+        "p-4 rounded-xl border",
+        color === "emerald" && "bg-emerald-50 dark:bg-emerald-500/10 border-emerald-200 dark:border-emerald-500/20",
+        color === "amber" && "bg-amber-50 dark:bg-amber-500/10 border-amber-200 dark:border-amber-500/20",
+        color === "red" && "bg-red-50 dark:bg-red-500/10 border-red-200 dark:border-red-500/20",
+      )}
+    >
+      <div className="flex items-start gap-3">
+        <CheckCircle2
+          className={clsx(
+            "w-5 h-5 mt-0.5 flex-shrink-0",
+            color === "emerald" && "text-emerald-500",
+            color === "amber" && "text-amber-500",
+            color === "red" && "text-red-500",
+          )}
+        />
+        <div>
+          <p className={clsx(
+            "text-sm font-semibold",
+            color === "emerald" && "text-emerald-800 dark:text-emerald-300",
+            color === "amber" && "text-amber-800 dark:text-amber-300",
+            color === "red" && "text-red-800 dark:text-red-300",
+          )}>
+            Microfone configurado
+          </p>
+          <p className={clsx(
+            "text-2xl font-bold mt-1",
+            color === "emerald" && "text-emerald-700 dark:text-emerald-400",
+            color === "amber" && "text-amber-700 dark:text-amber-400",
+            color === "red" && "text-red-700 dark:text-red-400",
+          )}>
+            Precisão estimada: {pct}%
+          </p>
+          <p className={clsx(
+            "text-xs mt-0.5",
+            color === "emerald" && "text-emerald-700 dark:text-emerald-400",
+            color === "amber" && "text-amber-700 dark:text-amber-400",
+            color === "red" && "text-red-700 dark:text-red-400",
+          )}>
+            {correctWords} de {EXPECTED_PHRASE_WORDS} palavras transcritas corretamente no teste de leitura
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SummaryDiffBlock({ current, recommended }: { current: AppSettings; recommended: CalibrationResult }) {
+  type Row = { label: string; before: string; after: string };
+  const rows: Row[] = [];
+
+  // Amplificação automática
+  if (recommended.mic_auto_gain !== (current.mic_auto_gain ?? false)) {
+    rows.push({
+      label: "Amplificação automática",
+      before: (current.mic_auto_gain ?? false) ? "Ligada" : "Desligada",
+      after: recommended.mic_auto_gain ? "Ligada" : "Desligada",
+    });
   }
 
-  if (recommended.mic_auto_gain && Math.abs(recommended.mic_gain_max - (current.mic_gain_max ?? 4)) > 0.1) {
-    if (recommended.mic_gain_max > (current.mic_gain_max ?? 4)) {
-      lines.push(`Amplificamos seu microfone (nível máximo: ${recommended.mic_gain_max.toFixed(1)}×)`);
-    } else {
-      lines.push(`Reduzimos a amplificação (nível máximo: ${recommended.mic_gain_max.toFixed(1)}×)`);
-    }
+  // Ganho máximo
+  const curGain = current.mic_gain_max ?? 4;
+  if (Math.abs(recommended.mic_gain_max - curGain) > 0.1) {
+    rows.push({
+      label: "Ganho máximo",
+      before: `${curGain.toFixed(1)}×`,
+      after: `${recommended.mic_gain_max.toFixed(1)}×`,
+    });
   }
 
-  if (Math.abs(recommended.mic_silence_threshold - (current.mic_silence_threshold ?? 0.003)) > 0.0005) {
-    lines.push("Corte de silêncio ajustado para o seu ambiente");
+  // Corte de silêncio
+  const curThreshold = current.mic_silence_threshold ?? 0.003;
+  if (Math.abs(recommended.mic_silence_threshold - curThreshold) > 0.0005) {
+    rows.push({
+      label: "Corte de silêncio",
+      before: curThreshold.toFixed(4),
+      after: recommended.mic_silence_threshold.toFixed(4),
+    });
   }
 
-  const currentRatio = current.mic_noise_gate_ratio ?? 0;
-  const currentPreset = currentRatio === 0 ? "silent" : currentRatio <= 3 ? "meeting" : "auditorium";
-  if (recommended.noise_gate_preset !== currentPreset) {
-    lines.push(`Filtro de ruído ajustado: ${PRESET_LABELS[recommended.noise_gate_preset]}`);
+  // Filtro de ruído
+  const curPreset = currentPresetFromSettings(current);
+  if (recommended.noise_gate_preset !== curPreset) {
+    rows.push({
+      label: "Filtro de ruído",
+      before: NOISE_GATE_LABELS[curPreset],
+      after: NOISE_GATE_LABELS[recommended.noise_gate_preset],
+    });
   }
 
-  if (lines.length === 0) {
-    lines.push("Suas configurações já estavam ótimas — nenhuma alteração necessária");
+  if (rows.length === 0) {
+    return (
+      <div className="p-4 rounded-xl bg-surface-50 dark:bg-surface-800/40 border border-surface-100 dark:border-surface-700/50">
+        <p className="text-sm text-surface-600 dark:text-surface-400 text-center">
+          Suas configurações já estavam ótimas — nenhuma alteração necessária.
+        </p>
+      </div>
+    );
   }
 
   return (
-    <ul className="space-y-2">
-      {lines.map((line, i) => (
-        <li key={i} className="flex items-start gap-2 text-sm text-surface-700 dark:text-surface-300">
-          <CheckCircle2 className="w-4 h-4 text-emerald-500 mt-0.5 flex-shrink-0" />
-          {line}
-        </li>
-      ))}
-    </ul>
+    <div className="p-4 rounded-xl bg-surface-50 dark:bg-surface-800/40 border border-surface-100 dark:border-surface-700/50">
+      <p className="text-xs font-semibold uppercase tracking-wider text-surface-500 dark:text-surface-400 mb-3">
+        O que mudou
+      </p>
+      <ul className="space-y-2">
+        {rows.map((r, i) => (
+          <li key={i} className="flex items-center justify-between text-sm">
+            <span className="text-surface-600 dark:text-surface-400 flex items-center gap-1.5">
+              <ChevronRight className="w-3 h-3 text-surface-400" />
+              {r.label}
+            </span>
+            <span className="font-mono text-xs">
+              <span className="text-surface-400 dark:text-surface-500">{r.before}</span>
+              <span className="text-surface-400 dark:text-surface-500 mx-1.5">→</span>
+              <span className="text-surface-800 dark:text-surface-100 font-semibold">{r.after}</span>
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function SummaryReasonsBlock({ current, recommended }: { current: AppSettings; recommended: CalibrationResult }) {
+  const reasons = explainChanges(current, recommended);
+  if (reasons.length === 0) return null;
+  return (
+    <div className="p-4 rounded-xl bg-primary-50/50 dark:bg-primary-500/5 border border-primary-100 dark:border-primary-500/20">
+      <p className="text-xs font-semibold uppercase tracking-wider text-primary-700 dark:text-primary-400 mb-2">
+        Por que essas mudanças
+      </p>
+      <div className="space-y-2">
+        {reasons.map((r, i) => (
+          <p key={i} className="text-sm text-surface-700 dark:text-surface-300 leading-relaxed">
+            {r}
+          </p>
+        ))}
+      </div>
+    </div>
   );
 }
