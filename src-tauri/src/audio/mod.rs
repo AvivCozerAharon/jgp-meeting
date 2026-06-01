@@ -370,7 +370,6 @@ pub fn start_capture(
         let mic_tx = chunk_tx.clone();
         let state_mic = Arc::clone(&state);
         let mic_dev_id = mic_config.device_id.clone();
-        let mic_chunk_secs = sys_chunk_secs;
         let mic_silence = mic_config.silence_threshold;
         let mic_agc = mic_config.auto_gain;
         let mic_gain_max = mic_config.gain_max;
@@ -490,13 +489,20 @@ pub fn start_capture(
                 mic_bps
             );
 
-            // ── Loop de captura do microfone (pipeline independente) ──────────
-            let mic_chunk_target = (mic_sr as f32 * mic_ch as f32 * mic_chunk_secs) as usize;
-            let mut mic_pcm_buffer: Vec<f32> = Vec::with_capacity(mic_chunk_target * 2);
+            // ── Loop de captura do microfone (pipeline independente) ────────────
+            // Usa SmartChunker para cortar em pausas naturais (mesma estratégia
+            // do loopback do sistema). Defaults otimizados para microfone:
+            // chunks menores → feedback mais rápido para o usuário.
+            let mic_chunker_config = chunker::ChunkerConfig {
+                min_chunk_secs: 1.5,
+                max_chunk_secs: 10.0,
+                silence_break_secs: 0.5,
+                vad_sensitivity: 0.55,
+            };
+            let mut mic_chunker = chunker::SmartChunker::new(mic_chunker_config, mic_sr, mic_ch);
 
             log::info!(
-                "Mic config: chunk={:.1}s, silence={:.4}, agc={}, gain_max={:.1}",
-                mic_chunk_secs,
+                "Mic config: chunker(min=1.5s, max=10s, break=0.5s, vad=0.55), silence={:.4}, agc={}, gain_max={:.1}",
                 mic_silence,
                 mic_agc,
                 mic_gain_max
@@ -534,81 +540,84 @@ pub fn start_capture(
                             let mut lvl = state_mic.mic_level.lock();
                             *lvl = (*lvl * 0.7 + rms * 0.3).min(1.0);
                         }
-                        mic_pcm_buffer.extend_from_slice(&samples);
+
+                        // Envia ao chunker — produz chunk em pausas naturais ou no max.
+                        if let Some(speech_chunk) = mic_chunker.push(&samples) {
+                            if state_mic.is_mic_muted() {
+                                // Descarta silenciosamente quando mic está muted.
+                            } else {
+                                let mut chunk_data = speech_chunk.samples;
+
+                                // Silence gate por RMS (segunda camada, complementar ao VAD).
+                                let chunk_rms = compute_rms(&chunk_data);
+                                if chunk_rms < mic_silence {
+                                    log::debug!(
+                                        "Mic: chunk silencioso (RMS={:.4} < {:.4}), descartado",
+                                        chunk_rms,
+                                        mic_silence
+                                    );
+                                } else {
+                                    // AGC aplicado DEPOIS do silence check (só em áudio com fala).
+                                    if mic_agc {
+                                        apply_auto_gain(&mut chunk_data, mic_gain_max);
+                                    }
+
+                                    log::debug!("Mic: chunk enviado (RMS={:.4}, dur={:.2}s)", chunk_rms, speech_chunk.duration_secs);
+                                    let chunk = AudioChunk {
+                                        samples: chunk_data,
+                                        sample_rate: mic_sr,
+                                        channels: mic_ch,
+                                        duration_secs: speech_chunk.duration_secs,
+                                        source: AudioSource::Microphone,
+                                    };
+                                    if mic_tx.send(chunk).is_err() {
+                                        log::warn!("Mic: canal fechado, encerrando captura");
+                                        break;
+                                    }
+                                }
+                            }
+                        }
                     }
-                    // Frames com AUDCLNT_BUFFERFLAGS_SILENT: NÃO acumula zeros
+                    // Frames com AUDCLNT_BUFFERFLAGS_SILENT: NÃO empurra zeros ao chunker.
 
                     let _ = capture_client.ReleaseBuffer(num_frames);
-                }
-
-                // Envia chunk quando acumulou amostras suficientes
-                if mic_pcm_buffer.len() >= mic_chunk_target {
-                    if state_mic.is_mic_muted() {
-                        mic_pcm_buffer.drain(..mic_chunk_target);
-                        continue;
-                    }
-
-                    let mut chunk_data: Vec<f32> =
-                        mic_pcm_buffer.drain(..mic_chunk_target).collect();
-
-                    // Silence check no chunk COMPLETO (antes do AGC)
-                    let rms = compute_rms(&chunk_data);
-                    if rms < mic_silence {
-                        log::debug!(
-                            "Mic: chunk silencioso (RMS={:.4} < {:.4}), descartado",
-                            rms,
-                            mic_silence
-                        );
-                        continue;
-                    }
-
-                    // AGC aplicado DEPOIS do silence check (só em áudio com fala real)
-                    if mic_agc {
-                        apply_auto_gain(&mut chunk_data, mic_gain_max);
-                    }
-
-                    log::debug!("Mic: chunk enviado (RMS={:.4})", rms);
-                    let chunk = AudioChunk {
-                        samples: chunk_data,
-                        sample_rate: mic_sr,
-                        channels: mic_ch,
-                        duration_secs: mic_chunk_secs,
-                        source: AudioSource::Microphone,
-                    };
-                    if mic_tx.send(chunk).is_err() {
-                        log::warn!("Mic: canal fechado, encerrando captura");
-                        break;
-                    }
                 }
             }
 
             // ── Flush final do microfone ─────────────────────────────────────
-            if !mic_pcm_buffer.is_empty() {
-                let remaining_samples = mic_pcm_buffer.len();
-                let actual_duration = remaining_samples as f32 / (mic_sr as f32 * mic_ch as f32);
+            // Drena o que sobrou no SmartChunker (pode haver chunks pendentes
+            // que não atingiram pausa natural antes do stop).
+            while let Some(speech_chunk) = mic_chunker.flush() {
+                let mut chunk_data = speech_chunk.samples;
+                let actual_duration = speech_chunk.duration_secs;
 
-                if actual_duration >= 0.5 {
-                    let mut chunk_data = mic_pcm_buffer;
-                    if mic_agc {
-                        apply_auto_gain(&mut chunk_data, mic_gain_max);
-                    }
-                    let rms = compute_rms(&chunk_data);
-                    if rms >= mic_silence {
-                        log::info!(
-                            "Mic flush final: enviando {:.2}s de áudio restante ({} amostras)",
-                            actual_duration,
-                            remaining_samples
-                        );
-                        let chunk = AudioChunk {
-                            samples: chunk_data,
-                            sample_rate: mic_sr,
-                            channels: mic_ch,
-                            duration_secs: actual_duration,
-                            source: AudioSource::Microphone,
-                        };
-                        let _ = mic_tx.send(chunk);
-                    }
+                if actual_duration < 0.3 {
+                    continue;
                 }
+
+                let rms = compute_rms(&chunk_data);
+                if rms < mic_silence {
+                    log::debug!("Mic flush descartado (silencioso, RMS={:.4})", rms);
+                    continue;
+                }
+
+                if mic_agc {
+                    apply_auto_gain(&mut chunk_data, mic_gain_max);
+                }
+
+                log::info!(
+                    "Mic flush final: enviando {:.2}s de áudio restante ({} amostras)",
+                    actual_duration,
+                    chunk_data.len()
+                );
+                let chunk = AudioChunk {
+                    samples: chunk_data,
+                    sample_rate: mic_sr,
+                    channels: mic_ch,
+                    duration_secs: actual_duration,
+                    source: AudioSource::Microphone,
+                };
+                let _ = mic_tx.send(chunk);
             }
 
             let _ = audio_client.Stop();

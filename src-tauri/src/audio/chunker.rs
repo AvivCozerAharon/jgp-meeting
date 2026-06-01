@@ -270,4 +270,42 @@ mod tests {
 
         assert!(chunk.is_some(), "Deveria produzir chunk na pausa natural");
     }
+
+    #[test]
+    fn test_mic_config_max_duration_is_10s() {
+        // Mic config (hardcoded em audio/mod.rs): max_chunk_secs = 10.0
+        let mut chunker = SmartChunker::new(
+            ChunkerConfig {
+                min_chunk_secs: 1.5,
+                max_chunk_secs: 10.0,
+                silence_break_secs: 0.5,
+                vad_sensitivity: 0.55,
+            },
+            16000,
+            1,
+        );
+
+        // Empurra 12s de áudio contínuo de fala (senoide) — deve forçar chunk em 10s.
+        let mut speech = Vec::new();
+        for i in 0..(16000 * 12) {
+            let t = i as f32 / 16000.0;
+            speech.push((440.0 * t * 2.0 * std::f32::consts::PI).sin() * 0.5);
+        }
+
+        // Empurra em blocos de 1600 samples (100ms) para simular streaming.
+        let mut produced_chunk: Option<SpeechChunk> = None;
+        for block in speech.chunks(1600) {
+            if let Some(chunk) = chunker.push(block) {
+                produced_chunk = Some(chunk);
+                break;
+            }
+        }
+
+        let chunk = produced_chunk.expect("Deveria produzir chunk ao atingir 10s");
+        assert!(
+            chunk.duration_secs <= 10.5, // pequena tolerância de 1 bloco
+            "Chunk de mic deve respeitar max=10s, mas teve {:.2}s",
+            chunk.duration_secs
+        );
+    }
 }
