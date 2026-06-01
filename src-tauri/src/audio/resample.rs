@@ -61,7 +61,7 @@ impl Resampler {
     }
 }
 
-fn resample_linear(samples: &[f32], source_rate: u32, target_rate: u32) -> Vec<f32> {
+pub(crate) fn resample_linear(samples: &[f32], source_rate: u32, target_rate: u32) -> Vec<f32> {
     if source_rate == target_rate || samples.is_empty() {
         return samples.to_vec();
     }
