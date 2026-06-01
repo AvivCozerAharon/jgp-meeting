@@ -2,12 +2,11 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import clsx from "clsx";
 import {
   X, Mic, CheckCircle2, AlertCircle, AlertTriangle,
-  ChevronRight, RotateCcw, Loader2, Volume2,
+  ChevronRight, RotateCcw, Loader2,
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { AppSettings, CalibrationSnapshot } from "@/types";
-import { MicLevelMeter } from "./MicLevelMeter";
+import { CalibrationLevelMeter } from "./CalibrationLevelMeter";
 
 interface MicCalibrationWizardProps {
   settings: AppSettings;
@@ -62,7 +61,6 @@ type Step =
 export function MicCalibrationWizard({ settings, onApply, onSaveSnapshot, onClose }: MicCalibrationWizardProps) {
   const [step, setStep] = useState<Step>("pre-check");
   const [profileName, setProfileName] = useState("");
-  const [micLevel, setMicLevel] = useState(0);
   const [countdown, setCountdown] = useState(COUNTDOWN_SECS);
   const [round, setRound] = useState(1);
   const [speechInstructions, setSpeechInstructions] = useState(
@@ -73,25 +71,7 @@ export function MicCalibrationWizard({ settings, onApply, onSaveSnapshot, onClos
   const [transcriptionRetries, setTranscriptionRetries] = useState(0);
   const [errorMsg, setErrorMsg] = useState("");
 
-  const unlistenRef = useRef<UnlistenFn | null>(null);
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const subscribingRef = useRef(false);
-
-  const subscribeToLevel = useCallback(async () => {
-    if (subscribingRef.current) return;
-    subscribingRef.current = true;
-    if (unlistenRef.current) {
-      unlistenRef.current();
-      unlistenRef.current = null;
-    }
-    try {
-      unlistenRef.current = await listen<number>("mic-test-level", (e) =>
-        setMicLevel(e.payload)
-      );
-    } finally {
-      subscribingRef.current = false;
-    }
-  }, []);
 
   const clearCountdown = useCallback(() => {
     if (countdownRef.current) {
@@ -102,7 +82,6 @@ export function MicCalibrationWizard({ settings, onApply, onSaveSnapshot, onClos
 
   useEffect(() => {
     return () => {
-      if (unlistenRef.current) unlistenRef.current();
       clearCountdown();
     };
   }, [clearCountdown]);
@@ -139,24 +118,18 @@ export function MicCalibrationWizard({ settings, onApply, onSaveSnapshot, onClos
   // speech-recording
   useEffect(() => {
     if (step !== "speech-recording") return;
-    setMicLevel(0);
-    subscribeToLevel().then(() => {
-      invoke("record_calibration_phase", { phase: "speech" })
-        .then(() => setStep("silence-recording"))
-        .catch((e: unknown) => { setErrorMsg(String(e)); setStep("error"); });
-    }).catch((e: unknown) => { setErrorMsg(String(e)); setStep("error"); });
-  }, [step, subscribeToLevel]);
+    invoke("record_calibration_phase", { phase: "speech" })
+      .then(() => setStep("silence-recording"))
+      .catch((e: unknown) => { setErrorMsg(String(e)); setStep("error"); });
+  }, [step]);
 
   // silence-recording
   useEffect(() => {
     if (step !== "silence-recording") return;
-    setMicLevel(0);
-    subscribeToLevel().then(() => {
-      invoke("record_calibration_phase", { phase: "silence" })
-        .then(() => setStep("computing"))
-        .catch((e: unknown) => { setErrorMsg(String(e)); setStep("error"); });
-    }).catch((e: unknown) => { setErrorMsg(String(e)); setStep("error"); });
-  }, [step, subscribeToLevel]);
+    invoke("record_calibration_phase", { phase: "silence" })
+      .then(() => setStep("computing"))
+      .catch((e: unknown) => { setErrorMsg(String(e)); setStep("error"); });
+  }, [step]);
 
   // computing
   useEffect(() => {
@@ -177,20 +150,17 @@ export function MicCalibrationWizard({ settings, onApply, onSaveSnapshot, onClos
   // transcription-recording
   useEffect(() => {
     if (step !== "transcription-recording" || !calibration) return;
-    setMicLevel(0);
-    subscribeToLevel().then(() => {
-      invoke<TranscriptionResult>("test_mic_transcription_phrase", {
-        autoGain: calibration.mic_auto_gain,
-        gainMax: calibration.mic_gain_max,
-        silenceThreshold: calibration.mic_silence_threshold,
+    invoke<TranscriptionResult>("test_mic_transcription_phrase", {
+      autoGain: calibration.mic_auto_gain,
+      gainMax: calibration.mic_gain_max,
+      silenceThreshold: calibration.mic_silence_threshold,
+    })
+      .then((result) => {
+        setTranscription(result);
+        setStep("transcription-result");
       })
-        .then((result) => {
-          setTranscription(result);
-          setStep("transcription-result");
-        })
-        .catch((e: unknown) => { setErrorMsg(String(e)); setStep("error"); });
-    }).catch((e: unknown) => { setErrorMsg(String(e)); setStep("error"); });
-  }, [step, calibration, subscribeToLevel]);
+      .catch((e: unknown) => { setErrorMsg(String(e)); setStep("error"); });
+  }, [step, calibration]);
 
   const handleStartSpeech = useCallback(() => setStep("speech-countdown"), []);
 
@@ -366,29 +336,12 @@ export function MicCalibrationWizard({ settings, onApply, onSaveSnapshot, onClos
 
           {/* speech-recording */}
           {step === "speech-recording" && (
-            <div className="space-y-3">
-              <div className="flex items-center gap-2">
-                <Mic className="w-4 h-4 text-primary-500 animate-pulse" />
-                <p className="text-sm font-semibold text-surface-700 dark:text-surface-300">
-                  Gravando sua fala... (5s)
-                </p>
-              </div>
-              <MicLevelMeter level={micLevel} className="p-3 rounded-xl bg-surface-50 dark:bg-surface-800/40 border border-surface-100 dark:border-surface-700/50" />
-              <LevelZoneHint level={micLevel} />
-            </div>
+            <CalibrationLevelMeter mode="speech" durationSecs={5} />
           )}
 
           {/* silence-recording */}
           {step === "silence-recording" && (
-            <div className="space-y-3">
-              <div className="flex items-center gap-2">
-                <Volume2 className="w-4 h-4 text-surface-400 animate-pulse" />
-                <p className="text-sm font-semibold text-surface-700 dark:text-surface-300">
-                  Agora fique em silêncio... (3s)
-                </p>
-              </div>
-              <MicLevelMeter level={micLevel} className="p-3 rounded-xl bg-surface-50 dark:bg-surface-800/40 border border-surface-100 dark:border-surface-700/50" />
-            </div>
+            <CalibrationLevelMeter mode="silence" durationSecs={3} />
           )}
 
           {/* computing */}
@@ -456,18 +409,12 @@ export function MicCalibrationWizard({ settings, onApply, onSaveSnapshot, onClos
           {/* transcription-recording */}
           {step === "transcription-recording" && (
             <div className="space-y-3">
-              <div className="flex items-center gap-2">
-                <Mic className="w-4 h-4 text-primary-500 animate-pulse" />
-                <p className="text-sm font-semibold text-surface-700 dark:text-surface-300">
-                  Gravando... leia a frase agora (6s)
-                </p>
-              </div>
               <div className="p-3 bg-primary-50 dark:bg-primary-500/10 rounded-xl border border-primary-100 dark:border-primary-500/20">
                 <p className="text-sm font-medium text-primary-800 dark:text-primary-200 leading-relaxed">
                   "A reunião de alinhamento com o cliente começa às quatorze horas na sala de conferências."
                 </p>
               </div>
-              <MicLevelMeter level={micLevel} className="p-3 rounded-xl bg-surface-50 dark:bg-surface-800/40 border border-surface-100 dark:border-surface-700/50" />
+              <CalibrationLevelMeter mode="speech" durationSecs={6} />
             </div>
           )}
 
@@ -618,20 +565,6 @@ function StepDot({ active, done, label }: { active: boolean; done: boolean; labe
         {label}
       </span>
     </div>
-  );
-}
-
-function LevelZoneHint({ level }: { level: number }) {
-  if (level >= 0.04 && level <= 0.7) return null;
-  return (
-    <p className={clsx(
-      "text-xs text-center font-medium",
-      level < 0.04 ? "text-yellow-600 dark:text-yellow-400" : "text-red-600 dark:text-red-400"
-    )}>
-      {level < 0.04
-        ? "Muito baixo — fale mais alto ou aproxime-se"
-        : "Muito alto — afaste-se do microfone"}
-    </p>
   );
 }
 
