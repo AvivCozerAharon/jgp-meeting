@@ -74,6 +74,17 @@ pub struct SileroVad {
 
 impl SileroVad {
     pub fn load(model_path: &Path) -> Result<Self> {
+        // With load-dynamic feature, ort must know where onnxruntime.dll is.
+        // Look for it next to the model file (same resources/ directory).
+        if let Some(dir) = model_path.parent() {
+            let dll = dir.join("onnxruntime.dll");
+            if dll.exists() {
+                // SAFETY: called once before any ORT session; no other threads use ORT yet.
+                #[allow(deprecated)]
+                unsafe { std::env::set_var("ORT_DYLIB_PATH", &dll) };
+            }
+        }
+
         let session = Session::builder()?
             .commit_from_file(model_path)?;
         Ok(Self {
