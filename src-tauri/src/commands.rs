@@ -232,6 +232,7 @@ pub async fn start_capture(
     *state.current_meeting.lock() = Some(meeting);
     state.transcript.store(Arc::new(String::new()));
     state.segments.lock().clear();
+    *state.capture_state.calibration_result.lock() = None;
     *state.capture_start.lock() = Some(Instant::now());
     let recording_start: Instant = state.capture_start.lock().unwrap();
 
@@ -617,8 +618,10 @@ pub async fn start_capture(
                 let prompt3   = whisper_prompt.clone();
                 let glossary3 = whisper_glossary.clone();
                 let recv_ms   = recording_start.elapsed().as_millis() as u64;
+                let sem3      = Arc::clone(&transcription_sem);  // clone per task
 
                 join_set.spawn(async move {
+                    let _permit = sem3.acquire_owned().await.expect("semaphore closed");
                     process_chunk(
                         drain_chunk, recording_start, recv_ms,
                         &provider3, &lang3, &key3, &groq3, &prompt3, &glossary3, &app3,

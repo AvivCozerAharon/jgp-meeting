@@ -147,10 +147,21 @@ impl SmartChunker {
     pub fn push(&mut self, samples: &[f32]) -> Option<SpeechChunk> {
         // ── Voice detection ──────────────────────────────────────────────────
         let voice_prob = if let Some(ref mut silero) = self.silero {
-            let samples_16k = if self.sample_rate != 16_000 {
-                resample_linear(samples, self.sample_rate, 16_000)
-            } else {
-                samples.to_vec()
+            let samples_16k = {
+                // Downmix interleaved stereo → mono before resampling
+                let mono: Vec<f32> = if self.channels > 1 {
+                    let ch = self.channels as usize;
+                    samples.chunks_exact(ch)
+                        .map(|f| f.iter().sum::<f32>() / ch as f32)
+                        .collect()
+                } else {
+                    samples.to_vec()
+                };
+                if self.sample_rate != 16_000 {
+                    resample_linear(&mono, self.sample_rate, 16_000)
+                } else {
+                    mono
+                }
             };
             silero.predict(&samples_16k)
         } else {
