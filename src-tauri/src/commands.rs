@@ -48,55 +48,31 @@ fn is_known_filler(text: &str) -> bool {
     )
 }
 
-fn is_whisper_hallucination(text: &str, source: &AudioSource) -> bool {
+/// Verifica se o texto bate em algum padrão de hallucination configurável.
+/// Match é case-insensitive substring.
+fn matches_hallucination_pattern(text: &str, patterns: &[String]) -> bool {
+    if patterns.is_empty() {
+        return false;
+    }
     let lower = text.to_lowercase();
-    let words: Vec<&str> = lower.split_whitespace().collect();
+    patterns.iter().any(|p| {
+        let p_lower = p.to_lowercase();
+        !p_lower.is_empty() && lower.contains(&p_lower)
+    })
+}
 
-    if *source == AudioSource::Microphone && words.len() < 4 {
+/// Gate de qualidade baseado nas probabilidades retornadas pelo Whisper verbose_json.
+/// Retorna true se o resultado deve ser descartado.
+/// Thresholds: no_speech_prob > 0.6 (provavelmente silêncio/ruído),
+/// avg_logprob < -1.0 (confiança baixa, possivelmente hallucination).
+fn is_low_quality_transcription(result: &transcription::TranscriptionResult) -> bool {
+    if result.no_speech_prob > 0.6 {
         return true;
     }
-
-    let full = lower.as_str();
-
-    let hallucination_patterns: &[&str] = &[
-        "inscrever no canal",
-        "ativar as notificac",
-        "se inscreva",
-        "obrigado por assistir",
-        "thanks for watching",
-        "subscribe to the channel",
-        "don't forget to subscribe",
-        "like and subscribe",
-        "smash the like button",
-        "leave a comment",
-        "click the link",
-        "check out the description",
-        "follow me on",
-        "background music",
-        "no copyright",
-        "royalty free",
-        "(applause)",
-        "(laughter)",
-        "(music)",
-        "sponsored by",
-        "vou me despedir",
-        "ate o proximo video",
-        "nos vemos no proximo",
-        "obrigado pela atencao",
-        "muito obrigado a todos",
-        "esse video foi",
-        "esse e o meu canal",
-    ];
-
-    if hallucination_patterns.iter().any(|p| full.contains(p)) {
+    // avg_logprob == 0.0 significa "sem segments" (resposta curta tipo Groq); não descarta por isso.
+    if result.avg_logprob < -1.0 && result.avg_logprob != 0.0 {
         return true;
     }
-
-    let unique_words: std::collections::HashSet<&str> = words.iter().copied().collect();
-    if words.len() > 0 && (unique_words.len() as f64 / words.len() as f64) < 0.5 {
-        return true;
-    }
-
     false
 }
 
@@ -298,7 +274,7 @@ pub async fn start_capture(
                 "source": source_str
             }));
 
-            let wav_bytes = match chunk.to_wav_bytes() {
+            let wav_bytes = match chunk.to_wav_bytes_whisper() {
                 Ok(b) => b,
                 Err(e) => {
                     log::error!("Erro ao codificar WAV: {e}");
@@ -345,17 +321,31 @@ pub async fn start_capture(
 
             let result = match provider {
                 "groq" => {
-                    transcription::transcribe_groq(wav_bytes, groq_key, Some(language), prompt_opt).await
+                    transcription::transcribe_groq_verbose(wav_bytes, groq_key, Some(language), prompt_opt).await
                 }
                 _ => {
-                    transcription::transcribe_audio(wav_bytes, api_key, Some(language), prompt_opt).await
+                    transcription::transcribe_audio_verbose(wav_bytes, api_key, Some(language), prompt_opt).await
                 }
             };
 
+            // Lê a lista de hallucinations configurável (recarrega settings a cada chunk
+            // para refletir mudanças sem precisar reiniciar a gravação).
+            let hallucination_patterns: Vec<String> = storage::load_settings()
+                .map(|s| s.hallucination_patterns)
+                .unwrap_or_default();
+
             let got_text = match result {
-                Ok(text) if !text.is_empty() => {
-                    if is_whisper_hallucination(&text, &chunk.source) {
-                        log::debug!("Hallucination descartado: {:?}", &text[..text.len().min(60)]);
+                Ok(tr) if !tr.text.is_empty() => {
+                    let text = tr.text.clone();
+                    if is_low_quality_transcription(&tr) {
+                        log::debug!(
+                            "Low-quality descartado (no_speech_prob={:.2}, avg_logprob={:.2}): {:?}",
+                            tr.no_speech_prob, tr.avg_logprob,
+                            &text[..text.len().min(60)]
+                        );
+                        false
+                    } else if matches_hallucination_pattern(&text, &hallucination_patterns) {
+                        log::debug!("Hallucination pattern descartado: {:?}", &text[..text.len().min(60)]);
                         false
                     } else {
                     let is_filler = chunk.source == AudioSource::Microphone && {
