@@ -167,17 +167,17 @@ impl std::fmt::Display for TranscriptionError {
 impl std::error::Error for TranscriptionError {}
 
 /// Retry loop that distinguishes retryable from permanent transcription errors.
-pub async fn retry_transcription<F>(
+pub async fn retry_transcription<T, F>(
     config: RetryConfig,
     mut operation: F,
-) -> anyhow::Result<String>
+) -> anyhow::Result<T>
 where
-    F: FnMut() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, TranscriptionError>> + Send>> + Send,
+    F: FnMut() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<T, TranscriptionError>> + Send>> + Send,
 {
     let mut backoff = ExponentialBackoff::new(config);
     loop {
         match operation().await {
-            Ok(text) => return Ok(text),
+            Ok(value) => return Ok(value),
             Err(TranscriptionError::Permanent(msg)) => {
                 return Err(anyhow::anyhow!("{}", msg));
             }
