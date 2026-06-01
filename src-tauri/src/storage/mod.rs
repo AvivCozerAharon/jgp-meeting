@@ -329,7 +329,7 @@ fn default_system_gain() -> f32 {
 }
 
 fn default_mic_silence_threshold() -> f32 {
-    0.01
+    0.004
 }
 
 fn default_noise_gate_ratio() -> f32 {
@@ -408,7 +408,7 @@ impl AppSettings {
             selected_microphone: String::new(),
             mic_auto_gain: true,
             mic_gain_max: 4.0,
-            mic_silence_threshold: 0.01,
+            mic_silence_threshold: 0.004,
             mic_noise_gate_ratio: 3.0,
             mic_noise_gate_hold_secs: 0.4,
             system_auto_gain: true,

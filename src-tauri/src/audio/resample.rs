@@ -97,18 +97,13 @@ pub fn to_whisper_format(samples: &[f32], source_rate: u32, channels: u16) -> Re
         return Ok(mono);
     }
 
-    // Tenta Rubato para buffers grandes, fallback linear para pequenos
-    if mono.len() >= 4096 {
-        if let Ok(mut resampler) = Resampler::new(source_rate, TARGET_RATE, 1) {
-            if let Ok(result) = resampler.resample(&mono) {
-                if !result.is_empty() {
-                    return Ok(result);
-                }
-            }
-        }
-        log::warn!("Rubato resample falhou, usando fallback linear");
-    }
-
+    // Resample linear: aceita buffers de qualquer tamanho. O Whisper reamostra
+    // internamente para 16kHz de qualquer jeito, então a qualidade do método
+    // de resample local tem impacto mínimo na transcrição final.
+    //
+    // (FftFixedInOut do Rubato processa em chunks fixos de 1024 amostras por
+    // chamada — passar o buffer inteiro de uma vez descarta o resto. Usar
+    // linear evita essa armadilha sem precisar de loop de chunked-processing.)
     Ok(resample_linear(&mono, source_rate, TARGET_RATE))
 }
 
