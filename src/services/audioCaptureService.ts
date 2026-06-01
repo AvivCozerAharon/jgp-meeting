@@ -130,10 +130,15 @@ export async function testMicWithTranscription(durationSecs?: number): Promise<M
   });
 }
 
+export interface MicTestLevel {
+  rms: number;
+  peak: number;
+}
+
 export async function onMicTestLevel(
-  callback: (level: number) => void
+  callback: (level: MicTestLevel) => void
 ): Promise<UnlistenFn> {
-  return listen<number>("mic-test-level", (event) => {
+  return listen<MicTestLevel>("mic-test-level", (event) => {
     callback(event.payload);
   });
 }
