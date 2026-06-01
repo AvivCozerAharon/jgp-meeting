@@ -150,7 +150,11 @@ export function MicCalibrationWizard({ settings, onApply, onSaveSnapshot, onClos
           setStep("transcription-ready");
         } else {
           setStep("round-failed");
-          if (result.failure_reason) setSpeechInstructions(result.failure_reason);
+          // Mapeia código → mensagem PT-BR para reuso do speech-ready banner.
+          // Mic_Mute tem UI dedicada e não precisa de speechInstructions.
+          if (result.failure_reason === "Clipping" || result.failure_reason === "Noise") {
+            setSpeechInstructions(FAILURE_MESSAGES[result.failure_reason]);
+          }
         }
       })
       .catch((e: unknown) => { setErrorMsg(String(e)); setStep("error"); });
