@@ -145,6 +145,22 @@ fn is_low_quality_transcription(result: &transcription::TranscriptionResult) -> 
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
+/// Tarefa que emite `mic-test-level` (objeto `{rms, peak}`) a cada 50 ms enquanto
+/// a captura estiver ativa. Encerra sozinha quando `is_capturing` vira false.
+/// Compartilhado por `record_calibration_phase`, `test_mic_transcription_phrase`
+/// e `test_mic_with_transcription` (todos usam o mesmo loop de polling).
+async fn emit_mic_levels_loop(app: AppHandle, capture_state: Arc<AudioCaptureState>) {
+    while capture_state.is_capturing() {
+        let rms = *capture_state.mic_level.lock();
+        let peak = *capture_state.mic_peak.lock();
+        let _ = app.emit("mic-test-level", serde_json::json!({
+            "rms": rms,
+            "peak": peak,
+        }));
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
 /// Retorna (api_key, endpoint) para geração de resumos com base nas configurações.
 fn summary_credentials(settings: &storage::AppSettings) -> (String, &'static str) {
     if settings.summary_provider == "openrouter" {
@@ -1071,19 +1087,7 @@ pub async fn record_calibration_phase(
     )
     .map_err(|e| format!("Erro ao iniciar captura: {e}"))?;
 
-    let cap_emit = Arc::clone(&capture_state);
-    let app_emit = app.clone();
-    let level_handle = tokio::spawn(async move {
-        while cap_emit.is_capturing() {
-            let rms = *cap_emit.mic_level.lock();
-            let peak = *cap_emit.mic_peak.lock();
-            let _ = app_emit.emit("mic-test-level", serde_json::json!({
-                "rms": rms,
-                "peak": peak,
-            }));
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
-    });
+    let level_handle = tokio::spawn(emit_mic_levels_loop(app.clone(), Arc::clone(&capture_state)));
 
     tokio::time::sleep(std::time::Duration::from_secs(duration_secs)).await;
     capture_state.is_capturing.store(false, Ordering::SeqCst);
@@ -1265,19 +1269,7 @@ pub async fn test_mic_transcription_phrase(
     )
     .map_err(|e| format!("Erro ao iniciar captura: {e}"))?;
 
-    let cap_emit = Arc::clone(&capture_state);
-    let app_emit = app.clone();
-    let level_handle = tokio::spawn(async move {
-        while cap_emit.is_capturing() {
-            let rms = *cap_emit.mic_level.lock();
-            let peak = *cap_emit.mic_peak.lock();
-            let _ = app_emit.emit("mic-test-level", serde_json::json!({
-                "rms": rms,
-                "peak": peak,
-            }));
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
-    });
+    let level_handle = tokio::spawn(emit_mic_levels_loop(app.clone(), Arc::clone(&capture_state)));
 
     tokio::time::sleep(std::time::Duration::from_secs(6)).await;
     capture_state.is_capturing.store(false, Ordering::SeqCst);
@@ -1417,19 +1409,7 @@ pub async fn test_mic_with_transcription(
 
     let secs = duration_secs.unwrap_or(5);
 
-    let cap_emit = Arc::clone(&capture_state);
-    let app_emit = app.clone();
-    let level_handle = tokio::spawn(async move {
-        while cap_emit.is_capturing() {
-            let rms = *cap_emit.mic_level.lock();
-            let peak = *cap_emit.mic_peak.lock();
-            let _ = app_emit.emit("mic-test-level", serde_json::json!({
-                "rms": rms,
-                "peak": peak,
-            }));
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
-    });
+    let level_handle = tokio::spawn(emit_mic_levels_loop(app.clone(), Arc::clone(&capture_state)));
 
     tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
     capture_state.is_capturing.store(false, Ordering::SeqCst);
