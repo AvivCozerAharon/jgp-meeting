@@ -56,16 +56,16 @@ fn has_repetition_loop(text: &str) -> bool {
     let n = words.len();
     if n < 8 { return false; }
 
-    for phrase_len in 1..=4usize {
-        if n < phrase_len * 4 { continue; }
-        for start in 0..=n.saturating_sub(phrase_len * 4) {
+    for phrase_len in 1..=10usize {
+        if n < phrase_len * 3 { continue; }
+        for start in 0..=n.saturating_sub(phrase_len * 3) {
             let phrase = &words[start..start + phrase_len];
             let mut reps = 0usize;
             let mut pos = start + phrase_len;
             while pos + phrase_len <= n && &words[pos..pos + phrase_len] == phrase {
                 reps += 1;
                 pos += phrase_len;
-                if reps >= 3 { return true; } // frase aparece 4+ vezes seguidas
+                if reps >= 2 { return true; } // frase aparece 3+ vezes seguidas
             }
         }
     }
