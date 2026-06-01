@@ -2,10 +2,12 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import clsx from "clsx";
 import {
   X, Mic, CheckCircle2, AlertCircle, AlertTriangle,
-  ChevronRight, RotateCcw, Loader2,
+  ChevronRight, RotateCcw, Loader2, VolumeX,
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import type { AppSettings, CalibrationSnapshot } from "@/types";
+import { listMicrophones } from "@/services/audioCaptureService";
+import { saveSettings } from "@/services/storageService";
 import { CalibrationLevelMeter } from "./CalibrationLevelMeter";
 
 interface MicCalibrationWizardProps {
@@ -24,7 +26,7 @@ interface CalibrationResult {
   mic_noise_gate_hold_secs: number;
   snr: number;
   round_passed: boolean;
-  failure_reason: string | null;
+  failure_reason: "Mic_Mute" | "Clipping" | "Noise" | null;
 }
 
 interface TranscriptionResult {
@@ -39,6 +41,11 @@ const PRESET_LABELS: Record<string, string> = {
   silent: "Ambiente silencioso",
   meeting: "Escritório",
   auditorium: "Sala barulhenta",
+};
+
+const FAILURE_MESSAGES: Record<"Clipping" | "Noise", string> = {
+  Clipping: "Você está muito perto do microfone. Recue um pouco e tente novamente.",
+  Noise: "Muito ruído de fundo — tente se afastar de fontes de ruído ou aproximar o microfone.",
 };
 
 const COUNTDOWN_SECS = 3;
@@ -68,6 +75,8 @@ export function MicCalibrationWizard({ settings, onApply, onSaveSnapshot, onClos
   );
   const [calibration, setCalibration] = useState<CalibrationResult | null>(null);
   const [transcription, setTranscription] = useState<TranscriptionResult | null>(null);
+  const [microphones, setMicrophones] = useState<{ id: string; name: string }[]>([]);
+  const [selectedMic, setSelectedMic] = useState<string>(settings.selected_microphone ?? "");
   const [transcriptionRetries, setTranscriptionRetries] = useState(0);
   const [errorMsg, setErrorMsg] = useState("");
 
@@ -146,6 +155,15 @@ export function MicCalibrationWizard({ settings, onApply, onSaveSnapshot, onClos
       })
       .catch((e: unknown) => { setErrorMsg(String(e)); setStep("error"); });
   }, [step, round]);
+
+  // Carrega lista de mics quando o caso Mic_Mute aparece
+  useEffect(() => {
+    if (step === "round-failed" && calibration?.failure_reason === "Mic_Mute") {
+      listMicrophones()
+        .then(setMicrophones)
+        .catch((e) => console.error("Erro ao listar microfones:", e));
+    }
+  }, [step, calibration]);
 
   // transcription-recording
   useEffect(() => {
@@ -354,8 +372,74 @@ export function MicCalibrationWizard({ settings, onApply, onSaveSnapshot, onClos
             </div>
           )}
 
-          {/* round-failed */}
-          {step === "round-failed" && calibration && (
+          {/* round-failed — UI diferente por código */}
+          {step === "round-failed" && calibration && calibration.failure_reason === "Mic_Mute" && (
+            <div className="space-y-4">
+              <div className="flex items-start gap-3 p-4 bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/20 rounded-xl">
+                <VolumeX className="w-5 h-5 text-red-500 mt-0.5 flex-shrink-0" />
+                <div>
+                  <p className="text-sm font-semibold text-red-800 dark:text-red-300">
+                    Seu microfone não está captando som
+                  </p>
+                  <p className="text-xs text-red-700 dark:text-red-400 mt-1">
+                    Não detectamos nenhum áudio. Verifique se o microfone certo está selecionado e se o volume não está zerado no Windows.
+                  </p>
+                </div>
+              </div>
+
+              {/* Dropdown embutido pra trocar mic */}
+              <div className="space-y-2">
+                <label className="text-xs font-medium text-surface-600 dark:text-surface-400">
+                  Microfone selecionado
+                </label>
+                <select
+                  value={selectedMic}
+                  onChange={async (e) => {
+                    const newId = e.target.value;
+                    setSelectedMic(newId);
+                    await saveSettings({ ...settings, selected_microphone: newId } as AppSettings);
+                  }}
+                  className="w-full px-3 py-2 text-sm rounded-xl border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-800/60 text-surface-800 dark:text-surface-200 focus:outline-none focus:ring-2 focus:ring-primary-500"
+                >
+                  {microphones.map((m) => (
+                    <option key={m.id} value={m.id}>{m.name}</option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Link painel de som */}
+              <button
+                type="button"
+                onClick={() => invoke("open_windows_sound_panel").catch(() => {})}
+                className="w-full text-xs text-primary-600 dark:text-primary-400 hover:underline text-left px-1"
+              >
+                Abrir painel de som do Windows →
+              </button>
+
+              <p className="text-xs text-surface-500 dark:text-surface-400 text-center">
+                Tentativa {round} de 3
+              </p>
+
+              <div className="flex gap-3">
+                <button
+                  onClick={onClose}
+                  className="px-4 py-2.5 rounded-xl text-sm font-medium border border-surface-200 dark:border-surface-700 text-surface-600 dark:text-surface-300 hover:bg-surface-50 dark:hover:bg-surface-800 transition-all"
+                >
+                  Cancelar
+                </button>
+                <button
+                  onClick={handleRetryRound}
+                  disabled={round >= 3}
+                  className="flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-xl text-sm font-semibold bg-primary-500 text-white hover:bg-primary-600 transition-all disabled:opacity-50"
+                >
+                  <RotateCcw className="w-4 h-4" />
+                  Tentar de novo
+                </button>
+              </div>
+            </div>
+          )}
+
+          {step === "round-failed" && calibration && calibration.failure_reason !== "Mic_Mute" && (
             <div className="space-y-4">
               <div className="flex items-start gap-3 p-4 bg-orange-50 dark:bg-orange-500/10 border border-orange-200 dark:border-orange-500/20 rounded-xl">
                 <AlertTriangle className="w-5 h-5 text-orange-500 mt-0.5 flex-shrink-0" />
@@ -364,7 +448,9 @@ export function MicCalibrationWizard({ settings, onApply, onSaveSnapshot, onClos
                     Precisamos tentar de novo
                   </p>
                   <p className="text-xs text-orange-700 dark:text-orange-400 mt-1">
-                    {calibration.failure_reason}
+                    {calibration.failure_reason === "Clipping" || calibration.failure_reason === "Noise"
+                      ? FAILURE_MESSAGES[calibration.failure_reason]
+                      : "Calibração falhou."}
                   </p>
                 </div>
               </div>

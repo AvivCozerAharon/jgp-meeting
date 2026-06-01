@@ -87,6 +87,8 @@ fn main() {
             commands::record_calibration_phase,
             commands::compute_calibration,
             commands::test_mic_transcription_phrase,
+            // Painel de som do Windows
+            commands::open_windows_sound_panel,
         ])
         .setup(|app| {
             #[cfg(debug_assertions)]

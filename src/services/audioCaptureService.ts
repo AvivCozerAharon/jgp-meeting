@@ -142,3 +142,7 @@ export async function onMicTestLevel(
     callback(event.payload);
   });
 }
+
+export async function listMicrophones(): Promise<import("@/types").AudioDevice[]> {
+  return await invoke<import("@/types").AudioDevice[]>("list_microphones");
+}

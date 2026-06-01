@@ -2679,6 +2679,23 @@ pub async fn close_compliance_window(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Abre o painel de Som do Windows (ou diagnóstico equivalente em outras plataformas).
+#[tauri::command]
+pub async fn open_windows_sound_panel() -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("cmd")
+            .args(["/c", "start", "ms-settings:sound"])
+            .spawn()
+            .map_err(|e| format!("Erro ao abrir painel de som: {e}"))?;
+        Ok(())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Err("Disponível apenas no Windows".to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{jaccard_bigrams, last_sentence_context};
