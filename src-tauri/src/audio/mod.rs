@@ -13,6 +13,7 @@
 pub mod agc;
 pub mod chunker;
 pub mod resample;
+pub mod silero;
 pub mod vad;
 
 use std::sync::atomic::{AtomicBool, Ordering};
