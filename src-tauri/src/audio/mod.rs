@@ -25,7 +25,7 @@ use anyhow::Result;
 use hound::{SampleFormat, WavSpec, WavWriter};
 
 pub use agc::{AgcConfig, AutomaticGainControl};
-pub use chunker::{ChunkerConfig, SmartChunker, SpeechChunk};
+pub use chunker::{CalibrationResult, ChunkerConfig, SmartChunker, SpeechChunk};
 pub use resample::{to_whisper_format, Resampler};
 pub use vad::{VadConfig, VoiceActivityDetector};
 
@@ -132,6 +132,8 @@ pub struct AudioCaptureState {
     pub mic_muted: AtomicBool,
     /// Quando true, os chunks de áudio são descartados (transcrição pausada)
     pub is_paused: AtomicBool,
+    /// Set by the mic thread when 2-second calibration completes.
+    pub calibration_result: parking_lot::Mutex<Option<CalibrationResult>>,
 }
 
 impl AudioCaptureState {
@@ -142,6 +144,7 @@ impl AudioCaptureState {
             mic_level: parking_lot::Mutex::new(0.0),
             mic_muted: AtomicBool::new(false),
             is_paused: AtomicBool::new(false),
+            calibration_result: parking_lot::Mutex::new(None),
         }
     }
 
@@ -290,6 +293,8 @@ pub struct MicConfig {
     pub auto_gain: bool,
     /// Fator de ganho máximo quando AGC está ativo (ex: 4.0 = amplifica até 4x)
     pub gain_max: f32,
+    /// Path to silero_vad.onnx; None = skip Silero, fall back to legacy VAD
+    pub silero_model_path: Option<std::path::PathBuf>,
 }
 
 /// Aplica ganho automático (AGC) a um buffer de amostras.
@@ -374,6 +379,7 @@ pub fn start_capture(
         let mic_silence = mic_config.silence_threshold;
         let mic_agc = mic_config.auto_gain;
         let mic_gain_max = mic_config.gain_max;
+        let mic_silero_path = mic_config.silero_model_path.clone();
 
         thread::spawn(move || unsafe {
             // COM em MTA nesta thread
@@ -500,7 +506,19 @@ pub fn start_capture(
                 silence_break_secs: 0.5,
                 vad_sensitivity: 0.55,
             };
-            let mut mic_chunker = chunker::SmartChunker::new(mic_chunker_config, mic_sr, mic_ch);
+
+            let silero_opt = mic_silero_path
+                .as_deref()
+                .and_then(|p| silero::SileroVad::load(p).ok());
+
+            let base_chunker = chunker::SmartChunker::new(mic_chunker_config, mic_sr, mic_ch);
+            let mut mic_chunker = if let Some(sil) = silero_opt {
+                log::info!("Mic: Silero VAD ativado (2s calibração)");
+                base_chunker.with_silero(sil, mic_silence)
+            } else {
+                log::info!("Mic: usando VAD legado (Silero indisponível)");
+                base_chunker
+            };
 
             log::info!(
                 "Mic config: chunker(min=1.5s, max=10s, break=0.5s, vad=0.55), silence={:.4}, agc={}, gain_max={:.1}",
@@ -544,6 +562,13 @@ pub fn start_capture(
 
                         // Envia ao chunker — produz chunk em pausas naturais ou no max.
                         if let Some(speech_chunk) = mic_chunker.push(&samples) {
+                            if let Some(cal) = mic_chunker.take_calibration_result() {
+                                log::info!(
+                                    "Calibração concluída: noise_floor={:.4}, speech_floor={:.4}, threshold={:.4}",
+                                    cal.noise_floor, cal.speech_floor, cal.threshold
+                                );
+                                *state_mic.calibration_result.lock() = Some(cal);
+                            }
                             if state_mic.is_mic_muted() {
                                 // Descarta silenciosamente quando mic está muted.
                             } else {

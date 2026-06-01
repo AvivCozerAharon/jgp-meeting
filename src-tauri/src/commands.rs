@@ -218,6 +218,7 @@ pub async fn start_capture(
         silence_threshold: settings.mic_silence_threshold,
         auto_gain: settings.mic_auto_gain,
         gain_max: settings.mic_gain_max,
+        silero_model_path: None,
     };
     audio::start_capture(
         capture_arc,
@@ -796,6 +797,7 @@ pub async fn test_microphone(
         silence_threshold: 0.0, // Sem filtro para o teste
         auto_gain: false,       // Sem AGC para ver nível real
         gain_max: 1.0,
+        silero_model_path: None,
     };
 
     audio::start_capture(
@@ -892,6 +894,7 @@ pub async fn measure_ambient_noise(
         silence_threshold: 0.0,
         auto_gain: false,
         gain_max: 1.0,
+        silero_model_path: None,
     };
     audio::start_capture(
         Arc::clone(&capture_state),
@@ -960,6 +963,7 @@ pub async fn record_calibration_phase(
         silence_threshold: 0.0,
         auto_gain: false,
         gain_max: 1.0,
+        silero_model_path: None,
     };
     audio::start_capture(
         Arc::clone(&capture_state),
@@ -1144,6 +1148,7 @@ pub async fn test_mic_transcription_phrase(
         silence_threshold,
         auto_gain,
         gain_max,
+        silero_model_path: None,
     };
     audio::start_capture(
         Arc::clone(&capture_state),
@@ -1288,6 +1293,7 @@ pub async fn test_mic_with_transcription(
         silence_threshold: settings.mic_silence_threshold,
         auto_gain: settings.mic_auto_gain,
         gain_max: settings.mic_gain_max,
+        silero_model_path: None,
     };
 
     audio::start_capture(
