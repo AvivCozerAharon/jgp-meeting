@@ -55,7 +55,7 @@ arc-swap = "1.7"          # Lock-free atomic swap para transcript
 once_cell = "1.19"        # Singleton HTTP client
 
 # Silero VAD — ONNX Runtime + ndarray
-ort     = { version = "2.0.0-rc.12", features = ["download-binaries", "ndarray"] }
+ort     = { version = "2.0.0-rc.12", features = ["download-binaries"] }
 ndarray = "0.15"
 
 [target.'cfg(windows)'.dependencies]

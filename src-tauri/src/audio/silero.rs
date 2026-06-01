@@ -83,6 +83,7 @@ impl SileroVad {
         })
     }
 
+    /// Expects mono 16 kHz samples; best accuracy with multiples of 512 (32 ms frames).
     pub fn predict(&mut self, samples: &[f32]) -> f32 {
         if samples.is_empty() { return 0.0; }
         let mut total = 0.0f32;
@@ -90,9 +91,9 @@ impl SileroVad {
         for chunk in samples.chunks(CHUNK_SIZE) {
             let mut frame = chunk.to_vec();
             frame.resize(CHUNK_SIZE, 0.0);
-            if let Ok(p) = self.run_frame(&frame) {
-                total += p;
-                count += 1;
+            match self.run_frame(&frame) {
+                Ok(p) => { total += p; count += 1; }
+                Err(e) => log::warn!("SileroVad: frame inference failed: {e}"),
             }
         }
         if count == 0 { 0.0 } else { total / count as f32 }
