@@ -61,6 +61,40 @@ fn matches_hallucination_pattern(text: &str, patterns: &[String]) -> bool {
     })
 }
 
+/// Returns the last complete sentence from `transcript` as Whisper prompt context.
+/// Falls back to the last 120 words if no sentence terminator is found.
+fn last_sentence_context(transcript: &str) -> String {
+    let trimmed = transcript.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    const SENTENCE_ENDS: [char; 3] = ['.', '!', '?'];
+    const MAX_WORDS: usize = 120;
+
+    let last_term = trimmed.char_indices().rev().find(|(_, c)| SENTENCE_ENDS.contains(c));
+
+    let effective: &str = match last_term {
+        None => trimmed,
+        Some((end_pos, end_char)) => {
+            let before = &trimmed[..end_pos];
+            let prev_term = before
+                .char_indices()
+                .rev()
+                .find(|(_, c)| SENTENCE_ENDS.contains(c));
+            let start = match prev_term {
+                None => 0,
+                Some((i, c)) => i + c.len_utf8(),
+            };
+            trimmed[start..end_pos + end_char.len_utf8()].trim()
+        }
+    };
+
+    let words: Vec<&str> = effective.split_whitespace().collect();
+    let start = words.len().saturating_sub(MAX_WORDS);
+    words[start..].join(" ")
+}
+
 /// Gate de qualidade baseado nas probabilidades retornadas pelo Whisper verbose_json.
 /// Retorna true se o resultado deve ser descartado.
 /// Thresholds: no_speech_prob > 0.6 (provavelmente silêncio/ruído),
@@ -295,14 +329,10 @@ pub async fn start_capture(
                 }
             };
 
-            // Build accumulated context: last 120 words of transcript so far + user's static prompt
+            // Build accumulated context: last complete sentence from transcript so far + user's static prompt
             let app_state = app.state::<AppState>();
             let accumulated = app_state.transcript.load();
-            let context_words: String = {
-                let words: Vec<&str> = accumulated.split_whitespace().collect();
-                let start = words.len().saturating_sub(120);
-                words[start..].join(" ")
-            };
+            let context_words = last_sentence_context(&accumulated);
             let glossary_part: Option<String> = {
                 let terms: Vec<&str> = whisper_glossary
                     .split([',', '\n'])
@@ -2613,7 +2643,7 @@ pub async fn close_compliance_window(app: AppHandle) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::jaccard_bigrams;
+    use super::{jaccard_bigrams, last_sentence_context};
 
     #[test]
     fn test_jaccard_identical() {
@@ -2637,5 +2667,43 @@ mod tests {
     fn test_jaccard_short_text_empty() {
         assert_eq!(jaccard_bigrams("", ""), 1.0);
         assert_eq!(jaccard_bigrams("hello", ""), 0.0);
+    }
+
+    #[test]
+    fn test_empty_transcript() {
+        assert_eq!(last_sentence_context(""), "");
+    }
+
+    #[test]
+    fn test_transcript_with_period() {
+        let t = "Hello world. Goodbye there.";
+        assert_eq!(last_sentence_context(t), "Goodbye there.");
+    }
+
+    #[test]
+    fn test_transcript_no_period() {
+        let t = "Hello world goodbye";
+        assert_eq!(last_sentence_context(t), "Hello world goodbye");
+    }
+
+    #[test]
+    fn test_exclamation_and_question() {
+        let t = "Really? Of course! Let's do it.";
+        assert_eq!(last_sentence_context(t), "Let's do it.");
+    }
+
+    #[test]
+    fn test_very_long_sentence_capped_at_120_words() {
+        let long: String = (0..150).map(|i| format!("word{} ", i)).collect();
+        let result = last_sentence_context(long.trim());
+        let count = result.split_whitespace().count();
+        assert!(count <= 120, "Expected ≤ 120 words, got {}", count);
+    }
+
+    #[test]
+    fn test_only_punctuation() {
+        // "..." — last '.' at index 2, prev '.' at index 1, slice is "." trimmed
+        let result = last_sentence_context("...");
+        assert!(!result.is_empty());
     }
 }
