@@ -56,9 +56,9 @@ struct CalibrationState {
 }
 
 impl CalibrationState {
-    fn new(sample_rate: u32, min_threshold: f32) -> Self {
+    fn new(sample_rate: u32, channels: u16, min_threshold: f32) -> Self {
         Self {
-            samples_target: sample_rate as usize * 2,
+            samples_target: sample_rate as usize * channels as usize * 2,
             samples_seen: 0,
             voice_rms: Vec::new(),
             noise_rms: Vec::new(),
@@ -132,7 +132,7 @@ impl SmartChunker {
     /// Attach Silero VAD and enable 2-second calibration.
     /// `min_threshold`: lower bound for the calibrated RMS silence threshold.
     pub fn with_silero(mut self, silero: SileroVad, min_threshold: f32) -> Self {
-        self.calibration = Some(CalibrationState::new(self.sample_rate, min_threshold));
+        self.calibration = Some(CalibrationState::new(self.sample_rate, self.channels, min_threshold));
         self.silero = Some(silero);
         self
     }
@@ -164,6 +164,15 @@ impl SmartChunker {
                 cal.observe(rms, voice_prob > 0.5);
                 cal.samples_seen += samples.len();
                 self.buffer.extend(samples); // accumulate — no audio lost
+
+                // Mirror speech state so buffered preamble is not discarded by flush()
+                self.max_voice_prob = self.max_voice_prob.max(voice_prob);
+                if voice_prob > 0.3 {
+                    self.has_speech = true;
+                    self.silence_samples = 0;
+                } else {
+                    self.silence_samples += samples.len();
+                }
 
                 if cal.is_done() {
                     self.calibration_result = Some(cal.finish());
