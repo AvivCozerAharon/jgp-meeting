@@ -561,14 +561,18 @@ pub fn start_capture(
                         }
 
                         // Envia ao chunker — produz chunk em pausas naturais ou no max.
-                        if let Some(speech_chunk) = mic_chunker.push(&samples) {
-                            if let Some(cal) = mic_chunker.take_calibration_result() {
-                                log::info!(
-                                    "Calibração concluída: noise_floor={:.4}, speech_floor={:.4}, threshold={:.4}",
-                                    cal.noise_floor, cal.speech_floor, cal.threshold
-                                );
-                                *state_mic.calibration_result.lock() = Some(cal);
-                            }
+                        let push_result = mic_chunker.push(&samples);
+
+                        // Check calibration unconditionally — fires on the frame after calibration ends
+                        if let Some(cal) = mic_chunker.take_calibration_result() {
+                            log::info!(
+                                "Calibração concluída: noise_floor={:.4}, speech_floor={:.4}, threshold={:.4}",
+                                cal.noise_floor, cal.speech_floor, cal.threshold
+                            );
+                            *state_mic.calibration_result.lock() = Some(cal);
+                        }
+
+                        if let Some(speech_chunk) = push_result {
                             if state_mic.is_mic_muted() {
                                 // Descarta silenciosamente quando mic está muted.
                             } else {
