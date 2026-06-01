@@ -1162,12 +1162,12 @@ pub async fn compute_calibration(
         99.0
     };
 
-    let (round_passed, failure_reason): (bool, Option<&str>) = if speech_peak > 0.95 {
-        (false, Some("Clipping detectado — você está muito perto do microfone. Recue um pouco e tente novamente."))
-    } else if speech_rms < 0.02 {
-        (false, Some("Microfone muito baixo — fale mais alto ou aproxime-se do microfone."))
-    } else if snr < 6.0 {
-        (false, Some("Muito ruído de fundo — tente se afastar de fontes de ruído ou aproximar o microfone."))
+    let (round_passed, failure_reason): (bool, Option<&str>) = if speech_peak < 0.005 {
+        (false, Some("Mic_Mute"))
+    } else if speech_peak > 0.95 {
+        (false, Some("Clipping"))
+    } else if snr < 6.0 && silence_rms > 0.005 {
+        (false, Some("Noise"))
     } else {
         (true, None)
     };
@@ -1177,7 +1177,7 @@ pub async fn compute_calibration(
     let (auto_gain, gain_max) = if speech_rms >= 0.12 {
         (false, 1.0f32)
     } else {
-        let gmax = (0.18 / speech_rms.max(0.001)).clamp(1.5, 8.0);
+        let gmax = (0.18 / speech_rms.max(0.001)).clamp(1.5, 12.0);
         (true, gmax)
     };
 
