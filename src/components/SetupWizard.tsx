@@ -602,20 +602,31 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ onComplete }) => {
               </div>
             )}
 
-            <button
-              type="button"
-              onClick={() => setShowCalibration(true)}
-              disabled={calibrated}
-              className={clsx(
-                "flex items-center justify-center gap-2 py-3 rounded-xl text-sm font-semibold transition-all",
-                calibrated
-                  ? "bg-surface-100 dark:bg-surface-800 text-surface-400 cursor-not-allowed"
-                  : "border-2 border-primary-500 text-primary-600 dark:text-primary-400 hover:bg-primary-50 dark:hover:bg-primary-500/10"
+            <div className="flex flex-col gap-2">
+              <button
+                type="button"
+                onClick={() => setShowCalibration(true)}
+                disabled={calibrated}
+                className={clsx(
+                  "flex items-center justify-center gap-2 py-3 rounded-xl text-sm font-semibold transition-all",
+                  calibrated
+                    ? "bg-surface-100 dark:bg-surface-800 text-surface-400 cursor-not-allowed"
+                    : "border-2 border-primary-500 text-primary-600 dark:text-primary-400 hover:bg-primary-50 dark:hover:bg-primary-500/10"
+                )}
+              >
+                <Mic className="w-4 h-4" />
+                {calibrated ? "Calibração concluída" : "Calibrar agora"}
+              </button>
+              {!calibrated && (
+                <button
+                  type="button"
+                  onClick={() => setStep((s) => s + 1)}
+                  className="text-xs text-surface-500 dark:text-surface-400 hover:text-surface-700 dark:hover:text-surface-200 transition-colors py-1"
+                >
+                  Calibrar depois →
+                </button>
               )}
-            >
-              <Mic className="w-4 h-4" />
-              {calibrated ? "Calibração concluída" : "Calibrar agora"}
-            </button>
+            </div>
           </div>
         );
 

@@ -198,7 +198,13 @@ export function MicCalibrationWizard({ settings, onApply, onSaveSnapshot, onClos
     invoke<CalibrationResult>("compute_calibration")
       .then((result) => {
         setCalibration(result);
-        if (result.round_passed || round >= 3) {
+        // Round 3 finaliza por timeout — EXCETO em Mic_Mute: não faz sentido
+        // aplicar calibração de um mic morto, então mostra a UI dedicada com
+        // dropdown de troca de device.
+        const shouldFinalize =
+          result.round_passed ||
+          (round >= 3 && result.failure_reason !== "Mic_Mute");
+        if (shouldFinalize) {
           setStep("transcription-ready");
         } else {
           setStep("round-failed");
