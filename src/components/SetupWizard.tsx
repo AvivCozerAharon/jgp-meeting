@@ -1,7 +1,7 @@
 // components/SetupWizard.tsx
 // Wizard de configuração inicial — exibido na primeira execução do app.
 
-import React, { useState, useCallback } from "react";
+import React, { useState, useCallback, useEffect } from "react";
 import clsx from "clsx";
 import {
   CheckCircle2,
@@ -23,7 +23,9 @@ import {
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { getSettings, saveSettings } from "@/services/storageService";
-import type { AppSettings } from "@/types";
+import { listMicrophones } from "@/services/audioCaptureService";
+import { MicCalibrationWizard } from "./MicCalibrationWizard";
+import type { AppSettings, AudioDevice, CalibrationSnapshot } from "@/types";
 import jgpLogo from "../assets/marca-jgp-white.png";
 
 // ─── Tipos ───────────────────────────────────────────────────────────────────
@@ -298,7 +300,7 @@ const StepIndicator: React.FC<{ current: number; total: number }> = ({ current, 
 
 export const SetupWizard: React.FC<SetupWizardProps> = ({ onComplete }) => {
   const [step, setStep] = useState(0);
-  const TOTAL_STEPS = 5;
+  const TOTAL_STEPS = 6;
 
   // Step 2 — API
   const [provider, setProvider] = useState<Provider>("openai");
@@ -308,7 +310,14 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ onComplete }) => {
   const [keyStatus, setKeyStatus] = useState<"idle" | "ok" | "error">("idle");
   const [keyError, setKeyError] = useState("");
 
-  // Step 3 — JGRC
+  // Step 3 — Microfone
+  const [microphones, setMicrophones] = useState<AudioDevice[]>([]);
+  const [selectedMic, setSelectedMic] = useState("");
+  const [showCalibration, setShowCalibration] = useState(false);
+  const [calibrated, setCalibrated] = useState(false);
+  const [micSettings, setMicSettings] = useState<AppSettings | null>(null);
+
+  // Step 4 — JGRC
   const [jgrcConnected, setJgrcConnected] = useState(false);
 
   const [saving, setSaving] = useState(false);
@@ -343,6 +352,45 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ onComplete }) => {
       setTestingKey(false);
     }
   }, [apiKey, provider]);
+
+  // Carrega microfones e settings ao entrar no step 3
+  useEffect(() => {
+    if (step !== 3) return;
+    Promise.all([listMicrophones(), getSettings()])
+      .then(([devs, s]) => {
+        setMicrophones(devs);
+        setSelectedMic(s.selected_microphone ?? "");
+        setMicSettings(s);
+      })
+      .catch((e) => console.error("Erro ao carregar mics/settings:", e));
+  }, [step]);
+
+  const handleMicChange = useCallback(async (newId: string) => {
+    setSelectedMic(newId);
+    const current = await getSettings();
+    await saveSettings({ ...current, selected_microphone: newId });
+    setMicSettings({ ...current, selected_microphone: newId });
+  }, []);
+
+  const handleApplyCalibration = useCallback(async (patch: Partial<AppSettings>) => {
+    const current = await getSettings();
+    const updated = { ...current, ...patch };
+    await saveSettings(updated);
+    setMicSettings(updated);
+  }, []);
+
+  const handleSaveCalibrationSnapshot = useCallback(async (snapshot: CalibrationSnapshot) => {
+    const current = await getSettings();
+    const snapshots = current.calibration_snapshots ?? [];
+    await saveSettings({ ...current, calibration_snapshots: [...snapshots, snapshot] });
+  }, []);
+
+  const handleCalibrationComplete = useCallback(() => {
+    setCalibrated(true);
+    setShowCalibration(false);
+    // Avança automaticamente pro próximo passo (JGRC)
+    setStep((s) => s + 1);
+  }, []);
 
   const handleJgrcLogin = useCallback(async () => {
     try {
@@ -510,8 +558,69 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ onComplete }) => {
           </div>
         );
 
-      // ── Step 3: JGRC ──────────────────────────────────────────────────────
+      // ── Step 3: Microfone ──────────────────────────────────────────────────
       case 3:
+        return (
+          <div className="flex flex-col gap-5">
+            <div>
+              <h2 className="text-lg font-bold text-surface-900 dark:text-surface-100 mb-1">
+                Seu microfone
+              </h2>
+              <p className="text-sm text-surface-500 dark:text-surface-400">
+                Escolha o microfone que você usa nas reuniões.
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-xs font-medium text-surface-600 dark:text-surface-400">
+                Dispositivo
+              </label>
+              <select
+                value={selectedMic}
+                onChange={(e) => handleMicChange(e.target.value)}
+                className="w-full px-3 py-2 text-sm rounded-xl border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-800/60 text-surface-800 dark:text-surface-200 focus:outline-none focus:ring-2 focus:ring-primary-500"
+              >
+                {microphones.map((m) => (
+                  <option key={m.id || "default"} value={m.id}>{m.name}</option>
+                ))}
+              </select>
+            </div>
+
+            <div className="flex items-start gap-3 p-3 rounded-xl bg-primary-50 dark:bg-primary-500/10 border border-primary-100 dark:border-primary-500/20">
+              <Mic className="w-4 h-4 text-primary-500 mt-0.5 flex-shrink-0" />
+              <p className="text-xs text-primary-800 dark:text-primary-200 leading-relaxed">
+                <strong>Calibrar seu microfone melhora muito a transcrição</strong> — o app aprende seu volume normal e o ruído do seu ambiente. Você pode calibrar agora ou depois em <span className="font-medium">Configurações → Calibrar microfone</span>.
+              </p>
+            </div>
+
+            {calibrated && (
+              <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/20">
+                <CheckCircle2 className="w-4 h-4 text-emerald-500" />
+                <span className="text-xs font-medium text-emerald-700 dark:text-emerald-400">
+                  Microfone calibrado!
+                </span>
+              </div>
+            )}
+
+            <button
+              type="button"
+              onClick={() => setShowCalibration(true)}
+              disabled={calibrated}
+              className={clsx(
+                "flex items-center justify-center gap-2 py-3 rounded-xl text-sm font-semibold transition-all",
+                calibrated
+                  ? "bg-surface-100 dark:bg-surface-800 text-surface-400 cursor-not-allowed"
+                  : "border-2 border-primary-500 text-primary-600 dark:text-primary-400 hover:bg-primary-50 dark:hover:bg-primary-500/10"
+              )}
+            >
+              <Mic className="w-4 h-4" />
+              {calibrated ? "Calibração concluída" : "Calibrar agora"}
+            </button>
+          </div>
+        );
+
+      // ── Step 4: JGRC ──────────────────────────────────────────────────────
+      case 4:
         return (
           <div className="flex flex-col gap-5">
             <div>
@@ -545,8 +654,8 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ onComplete }) => {
           </div>
         );
 
-      // ── Step 4: Pronto ────────────────────────────────────────────────────
-      case 4:
+      // ── Step 5: Pronto ────────────────────────────────────────────────────
+      case 5:
         return (
           <div className="flex flex-col items-center text-center gap-6 py-4">
             <div className="w-20 h-20 rounded-full bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center">
@@ -560,6 +669,17 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ onComplete }) => {
             </div>
             <div className="w-full max-w-xs space-y-2">
               <ConfigItem label="Transcrição e Resumo" value={apiKey ? PROVIDER_LABELS[provider] : "Não configurado"} ok={!!apiKey} />
+              <ConfigItem
+                label="Microfone"
+                value={microphones.find((m) => m.id === selectedMic)?.name ?? "Padrão do sistema"}
+                ok={true}
+              />
+              <ConfigItem
+                label="Calibração"
+                value={calibrated ? "Concluída" : "Pendente"}
+                ok={calibrated}
+                optional
+              />
               <ConfigItem label="Integração JGRC" value={jgrcConnected ? "Conectado" : "Não configurado"} ok={jgrcConnected} optional />
             </div>
           </div>
@@ -573,10 +693,11 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ onComplete }) => {
   // ── Footer ─────────────────────────────────────────────────────────────────
 
   const isLastStep = step === TOTAL_STEPS - 1;
-  // Steps 2 e 3 sempre avançam (pulável)
-  const canSkip = step === 2 || step === 3;
+  // Steps 2 (API), 3 (Microfone) e 4 (JGRC) são puláveis
+  const canSkip = step === 2 || step === 3 || step === 4;
 
   return (
+    <>
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
       <div className={clsx(
         "w-full max-w-lg mx-4 rounded-2xl shadow-2xl overflow-hidden",
@@ -648,6 +769,17 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ onComplete }) => {
         </div>
       </div>
     </div>
+
+    {showCalibration && micSettings && (
+      <MicCalibrationWizard
+        settings={micSettings}
+        onApply={handleApplyCalibration}
+        onSaveSnapshot={handleSaveCalibrationSnapshot}
+        onClose={() => setShowCalibration(false)}
+        onComplete={handleCalibrationComplete}
+      />
+    )}
+    </>
   );
 };
 
