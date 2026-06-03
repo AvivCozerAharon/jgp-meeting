@@ -4,7 +4,8 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 use crate::ai::MeetingSummary;
@@ -437,6 +438,36 @@ impl AppSettings {
 
 // ─── Helpers internos ─────────────────────────────────────────────────────────
 
+/// Escrita atômica em disco: grava em `{path}.tmp`, faz flush + sync_all
+/// (FlushFileBuffers no Windows, fsync no POSIX) e só então renomeia para `path`.
+///
+/// Garantias:
+/// - Crash no meio do write → `path` original intacto; sobra `{path}.tmp` que pode
+///   ser limpo no startup.
+/// - Queda de energia após retorno → conteúdo está no disco físico, não só em cache.
+/// - `rename` é atômico em NTFS e POSIX: o arquivo final nunca aparece parcialmente
+///   escrito para outro leitor.
+fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
+    let mut tmp_os = path.as_os_str().to_owned();
+    tmp_os.push(".tmp");
+    let tmp: PathBuf = tmp_os.into();
+
+    {
+        let mut f = fs::File::create(&tmp)
+            .with_context(|| format!("Falha ao criar arquivo temporário {}", tmp.display()))?;
+        f.write_all(data)
+            .with_context(|| format!("Falha ao escrever em {}", tmp.display()))?;
+        f.sync_all()
+            .with_context(|| format!("Falha no fsync de {}", tmp.display()))?;
+    }
+
+    fs::rename(&tmp, path).with_context(|| {
+        format!("Falha ao renomear {} → {}", tmp.display(), path.display())
+    })?;
+
+    Ok(())
+}
+
 pub fn app_data_dir() -> Result<PathBuf> {
     let base =
         dirs::data_dir().context("Não foi possível determinar o diretório de dados do usuário")?;
@@ -449,6 +480,16 @@ fn meeting_file_path(id: &str) -> Result<PathBuf> {
     let dir = app_data_dir()?.join("meetings");
     fs::create_dir_all(&dir).context("Falha ao criar diretório de reuniões")?;
     Ok(dir.join(format!("{id}.json")))
+}
+
+fn in_progress_dir() -> Result<PathBuf> {
+    let dir = app_data_dir()?.join("meetings").join("in_progress");
+    fs::create_dir_all(&dir).context("Falha ao criar diretório in_progress")?;
+    Ok(dir)
+}
+
+fn in_progress_file_path(id: &str) -> Result<PathBuf> {
+    Ok(in_progress_dir()?.join(format!("{id}.json")))
 }
 
 fn settings_file_path() -> Result<PathBuf> {
@@ -474,7 +515,7 @@ pub fn load_tags() -> Result<Vec<Tag>> {
 pub fn save_tags(tags: &[Tag]) -> Result<()> {
     let path = tags_file_path()?;
     let json = serde_json::to_string_pretty(tags).context("Falha ao serializar tags")?;
-    fs::write(&path, json).context("Falha ao salvar tags")?;
+    atomic_write(&path, json.as_bytes()).context("Falha ao salvar tags")?;
     log::info!("Tags salvas ({} tags)", tags.len());
     Ok(())
 }
@@ -484,7 +525,8 @@ pub fn save_tags(tags: &[Tag]) -> Result<()> {
 pub fn save_meeting(meeting: &Meeting) -> Result<()> {
     let path = meeting_file_path(&meeting.id)?;
     let json = serde_json::to_string_pretty(meeting).context("Falha ao serializar reunião")?;
-    fs::write(&path, &json).context(format!("Falha ao gravar {}", path.display()))?;
+    atomic_write(&path, json.as_bytes())
+        .with_context(|| format!("Falha ao gravar {}", path.display()))?;
     log::info!("Reunião {} salva em {}", meeting.id, path.display());
     Ok(())
 }
@@ -528,6 +570,134 @@ pub fn delete_meeting(id: &str) -> Result<()> {
         log::info!("Reunião {id} removida");
     }
     Ok(())
+}
+
+// ─── Autosave de gravação em andamento ────────────────────────────────────────
+
+/// Salva um snapshot da reunião em andamento em `meetings/in_progress/{id}.json`.
+///
+/// Chamado periodicamente pelo worker de captura para que, em caso de crash, queda
+/// de energia ou kill do processo, a transcrição até o último checkpoint sobreviva.
+/// Usa `atomic_write` — o arquivo nunca aparece parcialmente escrito.
+pub fn save_in_progress(meeting: &Meeting) -> Result<()> {
+    let path = in_progress_file_path(&meeting.id)?;
+    let json = serde_json::to_string_pretty(meeting).context("Falha ao serializar snapshot")?;
+    atomic_write(&path, json.as_bytes())
+        .with_context(|| format!("Falha ao gravar snapshot em {}", path.display()))?;
+    Ok(())
+}
+
+/// Remove o snapshot de uma reunião em andamento (chamado após `save_meeting`
+/// concluir com sucesso). Idempotente — não falha se o arquivo já não existe.
+pub fn delete_in_progress(id: &str) -> Result<()> {
+    let path = in_progress_file_path(id)?;
+    if path.exists() {
+        fs::remove_file(&path)
+            .with_context(|| format!("Falha ao remover snapshot {}", path.display()))?;
+        log::debug!("Snapshot in_progress de {id} removido");
+    }
+    Ok(())
+}
+
+/// Resultado da recuperação de uma reunião que estava em andamento quando o app
+/// terminou inesperadamente.
+#[derive(Debug, Clone, Serialize)]
+pub struct RecoveredMeeting {
+    pub id: String,
+    pub title: String,
+    pub duration_secs: u64,
+    pub transcript_chars: usize,
+}
+
+/// Escaneia `meetings/in_progress/` e recupera reuniões que ficaram pendentes.
+///
+/// Para cada snapshot encontrado:
+/// - Se a reunião final já existe em `meetings/{id}.json` (crash entre save final
+///   e delete do snapshot), apenas remove o snapshot órfão.
+/// - Caso contrário, marca como recuperada (`ended_at = Now`, sufixo no título),
+///   move para `meetings/` e remove o snapshot.
+///
+/// Snapshots inválidos (parse falha) são deixados no disco para inspeção manual.
+pub fn recover_in_progress_meetings() -> Result<Vec<RecoveredMeeting>> {
+    let dir = in_progress_dir()?;
+    let mut recovered: Vec<RecoveredMeeting> = Vec::new();
+
+    let entries = match fs::read_dir(&dir) {
+        Ok(it) => it,
+        Err(e) => {
+            log::warn!("Não foi possível ler {}: {e}", dir.display());
+            return Ok(recovered);
+        }
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("json") {
+            continue;
+        }
+
+        let json = match fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(e) => {
+                log::warn!("Falha ao ler snapshot {}: {e} — deixado no disco", path.display());
+                continue;
+            }
+        };
+
+        let mut meeting: Meeting = match serde_json::from_str(&json) {
+            Ok(m) => m,
+            Err(e) => {
+                log::warn!(
+                    "Snapshot {} inválido: {e} — deixado no disco para inspeção",
+                    path.display()
+                );
+                continue;
+            }
+        };
+
+        // Snapshot órfão: a reunião final já está salva (crash entre save_meeting
+        // e delete_in_progress). Apenas remove o snapshot.
+        let final_path = meeting_file_path(&meeting.id)?;
+        if final_path.exists() {
+            let _ = fs::remove_file(&path);
+            log::info!("Snapshot órfão de {} removido (final já salvo)", meeting.id);
+            continue;
+        }
+
+        // Recuperação real: marca como finalizada agora e promove.
+        if meeting.ended_at.is_none() {
+            meeting.ended_at = Some(Utc::now());
+        }
+        if !meeting.title.contains("(recuperada)") {
+            meeting.title = format!("{} (recuperada)", meeting.title);
+        }
+
+        match save_meeting(&meeting) {
+            Ok(_) => {
+                let _ = fs::remove_file(&path);
+                log::info!(
+                    "Reunião {} recuperada ({} chars, {} s)",
+                    meeting.id,
+                    meeting.transcript.len(),
+                    meeting.duration_secs
+                );
+                recovered.push(RecoveredMeeting {
+                    id: meeting.id.clone(),
+                    title: meeting.title.clone(),
+                    duration_secs: meeting.duration_secs,
+                    transcript_chars: meeting.transcript.len(),
+                });
+            }
+            Err(e) => {
+                log::error!(
+                    "Falha ao promover snapshot {}: {e} — snapshot mantido no disco",
+                    meeting.id
+                );
+            }
+        }
+    }
+
+    Ok(recovered)
 }
 
 // ─── Configurações ────────────────────────────────────────────────────────────
@@ -593,7 +763,7 @@ pub fn save_settings(settings: &AppSettings) -> Result<()> {
 
     let json =
         serde_json::to_string_pretty(&storable).context("Falha ao serializar configurações")?;
-    fs::write(&path, json).context("Falha ao salvar configurações")?;
+    atomic_write(&path, json.as_bytes()).context("Falha ao salvar configurações")?;
     log::info!("Configurações salvas");
     Ok(())
 }

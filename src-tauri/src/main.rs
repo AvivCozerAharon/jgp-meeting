@@ -102,6 +102,18 @@ fn main() {
             // Feature 13: Atalho global (carregado das configurações)
             setup_global_shortcut(app);
 
+            // Recupera reuniões que ficaram em andamento (crash, queda de luz, kill).
+            // Snapshots autosaved em meetings/in_progress/ são promovidos para
+            // meetings/ e a UI é notificada via evento "meetings-recovered".
+            match storage::recover_in_progress_meetings() {
+                Ok(recovered) if !recovered.is_empty() => {
+                    log::info!("{} reunião(ões) recuperada(s) do autosave", recovered.len());
+                    let _ = app.emit("meetings-recovered", &recovered);
+                }
+                Ok(_) => {}
+                Err(e) => log::warn!("Falha na recuperação de reuniões em andamento: {e}"),
+            }
+
             Ok(())
         })
         .run(tauri::generate_context!())

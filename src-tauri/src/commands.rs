@@ -85,40 +85,6 @@ fn matches_hallucination_pattern(text: &str, patterns: &[String]) -> bool {
     })
 }
 
-/// Returns the last complete sentence from `transcript` as Whisper prompt context.
-/// Falls back to the last 120 words if no sentence terminator is found.
-fn last_sentence_context(transcript: &str) -> String {
-    let trimmed = transcript.trim();
-    if trimmed.is_empty() {
-        return String::new();
-    }
-
-    const SENTENCE_ENDS: [char; 3] = ['.', '!', '?'];
-    const MAX_WORDS: usize = 120;
-
-    let last_term = trimmed.char_indices().rev().find(|(_, c)| SENTENCE_ENDS.contains(c));
-
-    let effective: &str = match last_term {
-        None => trimmed,
-        Some((end_pos, end_char)) => {
-            let before = &trimmed[..end_pos];
-            let prev_term = before
-                .char_indices()
-                .rev()
-                .find(|(_, c)| SENTENCE_ENDS.contains(c));
-            let start = match prev_term {
-                None => 0,
-                Some((i, c)) => i + c.len_utf8(),
-            };
-            trimmed[start..end_pos + end_char.len_utf8()].trim()
-        }
-    };
-
-    let words: Vec<&str> = effective.split_whitespace().collect();
-    let start = words.len().saturating_sub(MAX_WORDS);
-    words[start..].join(" ")
-}
-
 /// Gate de qualidade baseado nas probabilidades retornadas pelo Whisper verbose_json.
 /// Retorna true se o resultado deve ser descartado.
 ///
@@ -325,8 +291,6 @@ pub async fn start_capture(
     let api_key          = settings.openai_api_key.clone();
     let groq_key         = settings.groq_api_key.clone();
     let language         = settings.transcription_language.clone();
-    let whisper_prompt   = settings.whisper_prompt.clone();
-    let whisper_glossary = settings.whisper_glossary.clone();
     let app_clone        = app.clone();
     let recording_start  = recording_start;
 
@@ -354,8 +318,6 @@ pub async fn start_capture(
             language: &str,
             api_key: &str,
             groq_key: &str,
-            whisper_prompt: &str,
-            whisper_glossary: &str,
             app: &AppHandle,
         ) -> bool {
             let source_str = match chunk.source {
@@ -379,30 +341,20 @@ pub async fn start_capture(
                 }
             };
 
-            // Build accumulated context: last complete sentence from transcript so far + user's static prompt
+            // Sem prompt: o Whisper trata o prompt como fala anterior e tende a ecoá-lo
+            // em silêncio (loops/hallucinations). Para streaming chunked, ausência de
+            // contexto é a escolha mais segura — trocamos um pouco de continuidade
+            // (capitalização/pontuação no início do chunk) por saída muito mais limpa.
+            // Vocabulário/contexto do usuário foram movidos para o pós-processamento
+            // (ai::generate_summary) onde não causam eco.
             let app_state = app.state::<AppState>();
-            let accumulated = app_state.transcript.load();
-            let context_words = last_sentence_context(&accumulated);
-
-            // Glossário removido do prompt: o Whisper trata o prompt como fala anterior,
-            // não como dicionário — enviar listas de termos causa echo e loops de hallucination.
-            let effective_prompt: Option<String> = match (
-                context_words.is_empty(),
-                whisper_prompt.is_empty(),
-            ) {
-                (true,  true)  => None,
-                (true,  false) => Some(whisper_prompt.to_string()),
-                (false, true)  => Some(context_words),
-                (false, false) => Some(format!("{} {}", context_words, whisper_prompt)),
-            };
-            let prompt_opt = effective_prompt.as_deref();
 
             let result = match provider {
                 "groq" => {
-                    transcription::transcribe_groq_verbose(wav_bytes, groq_key, Some(language), prompt_opt).await
+                    transcription::transcribe_groq_verbose(wav_bytes, groq_key, Some(language), None).await
                 }
                 _ => {
-                    transcription::transcribe_audio_verbose(wav_bytes, api_key, Some(language), prompt_opt).await
+                    transcription::transcribe_audio_verbose(wav_bytes, api_key, Some(language), None).await
                 }
             };
 
@@ -586,13 +538,11 @@ pub async fn start_capture(
                     let lang2     = language.clone();
                     let key2      = api_key.clone();
                     let groq2     = groq_key.clone();
-                    let prompt2   = whisper_prompt.clone();
-                    let glossary2   = whisper_glossary.clone();
                     tokio::spawn(async move {
                         let _permit = permit; // released when task ends
                         process_chunk(
                             chunk, recording_start, chunk_recv_ms,
-                            &provider2, &lang2, &key2, &groq2, &prompt2, &glossary2, &app2,
+                            &provider2, &lang2, &key2, &groq2, &app2,
                         ).await;
                     });
                 }
@@ -656,8 +606,6 @@ pub async fn start_capture(
                 let lang3     = language.clone();
                 let key3      = api_key.clone();
                 let groq3     = groq_key.clone();
-                let prompt3   = whisper_prompt.clone();
-                let glossary3 = whisper_glossary.clone();
                 let recv_ms   = recording_start.elapsed().as_millis() as u64;
                 let sem3      = Arc::clone(&transcription_sem);  // clone per task
 
@@ -665,7 +613,7 @@ pub async fn start_capture(
                     let _permit = sem3.acquire_owned().await.expect("semaphore closed");
                     process_chunk(
                         drain_chunk, recording_start, recv_ms,
-                        &provider3, &lang3, &key3, &groq3, &prompt3, &glossary3, &app3,
+                        &provider3, &lang3, &key3, &groq3, &app3,
                     ).await
                 });
             }
@@ -753,6 +701,46 @@ pub async fn start_capture(
         }
     });
 
+    // Autosave: a cada 15s grava um snapshot da reunião em
+    // meetings/in_progress/{id}.json. Se o app crashar, queda de luz, etc.,
+    // o `recover_in_progress_meetings()` no startup promove o snapshot.
+    let app_autosave = app.clone();
+    let cap_autosave = Arc::clone(&state.capture_state);
+    tokio::spawn(async move {
+        let app_state = app_autosave.state::<AppState>();
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+            if !cap_autosave.is_capturing() {
+                break;
+            }
+
+            // Snapshot da reunião com os dados acumulados até aqui.
+            let template = app_state.current_meeting.lock().clone();
+            let Some(mut snapshot) = template else {
+                // Sem reunião ativa — nada a salvar. Sai do loop.
+                break;
+            };
+            let segs: Vec<storage::TranscriptSegment> = app_state.segments.lock().clone();
+
+            // Sem nenhum segmento ainda? Pula este tick — não polui o disco.
+            if segs.is_empty() {
+                continue;
+            }
+
+            snapshot.transcript = segs.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join(" ");
+            snapshot.segments = Some(segs);
+            snapshot.duration_secs = app_state
+                .capture_start
+                .lock()
+                .map(|s: Instant| s.elapsed().as_secs())
+                .unwrap_or(0);
+
+            if let Err(e) = storage::save_in_progress(&snapshot) {
+                log::warn!("Falha no autosave de {}: {e}", snapshot.id);
+            }
+        }
+    });
+
     log::info!("Captura iniciada");
     Ok(())
 }
@@ -804,7 +792,13 @@ pub async fn stop_capture(
 
     let id = meeting.id.clone();
     storage::save_meeting(&meeting).map_err(|e| format!("Erro ao salvar reunião: {e}"))?;
-    state.segments.lock().clear();
+    // Snapshot de autosave não é mais necessário — a versão final está salva.
+    let _ = storage::delete_in_progress(&id);
+    // NÃO limpar state.segments aqui: o worker de draining (rodando em background)
+    // ainda vai inserir os chunks pendentes nesta mesma lista. Se limparmos agora,
+    // o re-save da Fase 4 do worker enxerga só os segments do drain e sobrescreve
+    // o transcript que acabamos de salvar — perdendo tudo que veio antes do stop.
+    // O próximo start_capture já faz clear, então este aqui era redundante.
     *state.capture_start.lock() = None;
 
     // Armazena o ID da reunião para o worker re-salvar após draining
@@ -829,12 +823,14 @@ pub async fn stop_capture(
             let meeting_id     = id.clone();
             let app_auto       = app.clone();
             let endpoint_owned = endpoint_str.to_string();
+            let extra_context  = settings.whisper_prompt.clone();
+            let vocabulary     = settings.whisper_glossary.clone();
 
             tokio::spawn(async move {
                 log::info!("Auto-resumo iniciado para reunião {meeting_id}");
                 let _ = app_auto.emit("auto-summary-loading", &meeting_id);
 
-                match ai::generate_summary(&transcript, &api_key, &model, &meeting_type, &endpoint_owned).await {
+                match ai::generate_summary(&transcript, &api_key, &model, &meeting_type, &endpoint_owned, &extra_context, &vocabulary).await {
                     Ok(summary) => {
                         if let Ok(mut m) = storage::load_meeting(&meeting_id) {
                             m.summary = Some(summary.clone());
@@ -1300,21 +1296,8 @@ pub async fn test_mic_transcription_phrase(
     let wav_bytes = build_wav_from_samples(&all_samples, sample_rate, channels)
         .map_err(|e| format!("Erro ao gerar WAV: {e}"))?;
 
-    let glossary_part: Option<String> = {
-        let terms: Vec<&str> = settings.whisper_glossary
-            .split([',', '\n'])
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .collect();
-        if terms.is_empty() { None } else { Some(terms.join(", ")) }
-    };
-    let effective_prompt = match (glossary_part, settings.whisper_prompt.is_empty()) {
-        (None, true)   => None,
-        (None, false)  => Some(settings.whisper_prompt.clone()),
-        (Some(g), true)  => Some(g),
-        (Some(g), false) => Some(format!("{} {}", g, settings.whisper_prompt)),
-    };
-    let prompt_opt = effective_prompt.as_deref();
+    // Sem prompt: alinha com o fluxo real de gravação (start_capture). Garante que
+    // o teste de calibração reflete o comportamento que o usuário verá em produção.
     let lang = if settings.transcription_language.is_empty() {
         None
     } else {
@@ -1322,8 +1305,8 @@ pub async fn test_mic_transcription_phrase(
     };
 
     let transcript_result = match settings.transcription_provider.as_str() {
-        "groq" => transcription::transcribe_groq(wav_bytes, &settings.groq_api_key, lang, prompt_opt).await,
-        _      => transcription::transcribe_audio(wav_bytes, &settings.openai_api_key, lang, prompt_opt).await,
+        "groq" => transcription::transcribe_groq(wav_bytes, &settings.groq_api_key, lang, None).await,
+        _      => transcription::transcribe_audio(wav_bytes, &settings.openai_api_key, lang, None).await,
     }
     .map(|t| t.trim().to_string());
 
@@ -1455,22 +1438,7 @@ pub async fn test_mic_with_transcription(
     let wav_bytes = build_wav_from_samples(&all_samples, sample_rate, channels)
         .map_err(|e| format!("Erro ao gerar WAV: {e}"))?;
 
-    let glossary_part: Option<String> = {
-        let terms: Vec<&str> = settings.whisper_glossary
-            .split([',', '\n'])
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .collect();
-        if terms.is_empty() { None } else { Some(terms.join(", ")) }
-    };
-    let effective_prompt = match (glossary_part, settings.whisper_prompt.is_empty()) {
-        (None, true) => None,
-        (None, false) => Some(settings.whisper_prompt.clone()),
-        (Some(g), true) => Some(g),
-        (Some(g), false) => Some(format!("{} {}", g, settings.whisper_prompt)),
-    };
-    let prompt_opt = effective_prompt.as_deref();
-
+    // Sem prompt: alinha com o fluxo real de gravação (start_capture).
     let lang = if settings.transcription_language.is_empty() {
         None
     } else {
@@ -1483,7 +1451,7 @@ pub async fn test_mic_with_transcription(
                 wav_bytes,
                 &settings.groq_api_key,
                 lang,
-                prompt_opt,
+                None,
             ).await
         }
         _ => {
@@ -1491,7 +1459,7 @@ pub async fn test_mic_with_transcription(
                 wav_bytes,
                 &settings.openai_api_key,
                 lang,
-                prompt_opt,
+                None,
             ).await
         }
     };
@@ -1611,7 +1579,9 @@ pub async fn generate_summary(
     let model = model.unwrap_or_else(|| ai::default_model().to_string());
     let mt = meeting_type.unwrap_or_default();
     let endpoint = base_url.as_deref().unwrap_or(ai::OPENAI_ENDPOINT);
-    ai::generate_summary(&transcript, &api_key, &model, &mt, endpoint)
+    // Hints (whisper_prompt + whisper_glossary) movidos do Whisper para o resumo.
+    let settings = storage::load_settings().unwrap_or_default();
+    ai::generate_summary(&transcript, &api_key, &model, &mt, endpoint, &settings.whisper_prompt, &settings.whisper_glossary)
         .await
         .map_err(|e| format!("Erro ao gerar resumo: {e}"))
 }
@@ -1630,8 +1600,9 @@ pub async fn generate_and_save_summary(
     let model = model.unwrap_or_else(|| ai::default_model().to_string());
     let mt = meeting.meeting_type.clone().unwrap_or_default();
     let endpoint = base_url.as_deref().unwrap_or(ai::OPENAI_ENDPOINT);
+    let settings = storage::load_settings().unwrap_or_default();
 
-    let summary = ai::generate_summary(&meeting.transcript, &api_key, &model, &mt, endpoint)
+    let summary = ai::generate_summary(&meeting.transcript, &api_key, &model, &mt, endpoint, &settings.whisper_prompt, &settings.whisper_glossary)
         .await
         .map_err(|e| format!("Erro ao gerar resumo: {e}"))?;
 
@@ -2698,7 +2669,7 @@ pub async fn open_windows_sound_panel() -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{jaccard_bigrams, last_sentence_context};
+    use super::jaccard_bigrams;
 
     #[test]
     fn test_jaccard_identical() {
@@ -2722,44 +2693,6 @@ mod tests {
     fn test_jaccard_short_text_empty() {
         assert_eq!(jaccard_bigrams("", ""), 1.0);
         assert_eq!(jaccard_bigrams("hello", ""), 0.0);
-    }
-
-    #[test]
-    fn test_empty_transcript() {
-        assert_eq!(last_sentence_context(""), "");
-    }
-
-    #[test]
-    fn test_transcript_with_period() {
-        let t = "Hello world. Goodbye there.";
-        assert_eq!(last_sentence_context(t), "Goodbye there.");
-    }
-
-    #[test]
-    fn test_transcript_no_period() {
-        let t = "Hello world goodbye";
-        assert_eq!(last_sentence_context(t), "Hello world goodbye");
-    }
-
-    #[test]
-    fn test_exclamation_and_question() {
-        let t = "Really? Of course! Let's do it.";
-        assert_eq!(last_sentence_context(t), "Let's do it.");
-    }
-
-    #[test]
-    fn test_very_long_sentence_capped_at_120_words() {
-        let long: String = (0..150).map(|i| format!("word{} ", i)).collect();
-        let result = last_sentence_context(long.trim());
-        let count = result.split_whitespace().count();
-        assert!(count <= 120, "Expected ≤ 120 words, got {}", count);
-    }
-
-    #[test]
-    fn test_only_punctuation() {
-        // "..." — last '.' at index 2, prev '.' at index 1, slice is "." trimmed
-        let result = last_sentence_context("...");
-        assert!(!result.is_empty());
     }
 
     #[test]

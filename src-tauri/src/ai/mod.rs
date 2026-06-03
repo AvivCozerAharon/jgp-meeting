@@ -197,12 +197,19 @@ async fn call_gpt_inner(
 // ─── Feature 8: Resumo com template ──────────────────────────────────────────
 
 /// Gera um resumo estruturado da reunião usando o template adequado ao tipo.
+///
+/// `extra_context` e `vocabulary` são hints opcionais (vazios = não usado):
+/// - `extra_context`: texto livre sobre a reunião/projeto (antes era `whisper_prompt`).
+/// - `vocabulary`: termos próprios/siglas que o transcritor pode ter grafado errado
+///   (antes era `whisper_glossary`). O LLM usa a grafia correta no resumo.
 pub async fn generate_summary(
     transcript: &str,
     api_key: &str,
     model: &str,
     meeting_type: &MeetingType,
     endpoint: &str,
+    extra_context: &str,
+    vocabulary: &str,
 ) -> Result<MeetingSummary> {
     if transcript.trim().len() < 50 {
         return Ok(MeetingSummary {
@@ -211,7 +218,18 @@ pub async fn generate_summary(
         });
     }
 
-    let system = summary_system_prompt(meeting_type);
+    let mut system = summary_system_prompt(meeting_type);
+    let ctx = extra_context.trim();
+    if !ctx.is_empty() {
+        system.push_str("\n\nContexto adicional fornecido pelo usuário (use para enquadrar o resumo):\n");
+        system.push_str(ctx);
+    }
+    let vocab = vocabulary.trim();
+    if !vocab.is_empty() {
+        system.push_str("\n\nVocabulário (termos próprios, siglas e nomes que o transcritor pode ter grafado errado — use a grafia correta no resumo):\n");
+        system.push_str(vocab);
+    }
+
     let user = format!(
         "Analise a transcrição abaixo e gere o resumo JSON:\n\n---\n{transcript}\n---"
     );
