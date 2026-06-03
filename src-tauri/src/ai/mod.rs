@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::storage::MeetingType;
+use crate::storage::{MeetingType, TranscriptSegment};
 
 pub const OPENAI_ENDPOINT: &str = "https://api.openai.com/v1/chat/completions";
 pub const OPENROUTER_ENDPOINT: &str = "https://openrouter.ai/api/v1/chat/completions";
@@ -196,20 +196,70 @@ async fn call_gpt_inner(
 
 // ─── Feature 8: Resumo com template ──────────────────────────────────────────
 
+/// Renderiza a transcrição com rótulos de falante a partir dos segments.
+/// `[Eu]` = áudio do microfone (usuário). `[Outros]` = áudio do sistema (interlocutores).
+/// Agrupa segments consecutivos da mesma fonte numa linha só para reduzir ruído visual.
+fn render_with_speakers(segments: &[TranscriptSegment]) -> String {
+    if segments.is_empty() {
+        return String::new();
+    }
+    let mut out = String::new();
+    let mut current_source: Option<&str> = None;
+    let mut current_buf = String::new();
+
+    let flush = |out: &mut String, source: Option<&str>, buf: &str| {
+        if buf.is_empty() {
+            return;
+        }
+        let label = match source {
+            Some("mic") => "[Eu]",
+            Some("system") => "[Outros]",
+            _ => "[?]",
+        };
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(label);
+        out.push(' ');
+        out.push_str(buf.trim());
+    };
+
+    for seg in segments {
+        let s = seg.source.as_str();
+        if current_source.is_some() && current_source != Some(s) {
+            flush(&mut out, current_source, &current_buf);
+            current_buf.clear();
+        }
+        current_source = Some(s);
+        if !current_buf.is_empty() {
+            current_buf.push(' ');
+        }
+        current_buf.push_str(seg.text.trim());
+    }
+    flush(&mut out, current_source, &current_buf);
+    out
+}
+
 /// Gera um resumo estruturado da reunião usando o template adequado ao tipo.
 ///
-/// `extra_context` e `vocabulary` são hints opcionais (vazios = não usado):
+/// Parâmetros opcionais (vazios = não usados):
+/// - `segments`: quando presente, monta a transcrição com rótulos `[Eu]`/`[Outros]`
+///   para que o modelo atribua corretamente decisões e ações a cada lado. Quando
+///   `None`, cai para o transcript flat (reuniões antigas sem `segments`).
 /// - `extra_context`: texto livre sobre a reunião/projeto (antes era `whisper_prompt`).
 /// - `vocabulary`: termos próprios/siglas que o transcritor pode ter grafado errado
 ///   (antes era `whisper_glossary`). O LLM usa a grafia correta no resumo.
+/// - `focus`: tópico/parte específica para enfatizar — outros assuntos ficam sucintos.
 pub async fn generate_summary(
     transcript: &str,
+    segments: Option<&[TranscriptSegment]>,
     api_key: &str,
     model: &str,
     meeting_type: &MeetingType,
     endpoint: &str,
     extra_context: &str,
     vocabulary: &str,
+    focus: &str,
 ) -> Result<MeetingSummary> {
     if transcript.trim().len() < 50 {
         return Ok(MeetingSummary {
@@ -219,6 +269,26 @@ pub async fn generate_summary(
     }
 
     let mut system = summary_system_prompt(meeting_type);
+
+    // Explica os rótulos só quando vamos usá-los, pra não confundir o modelo
+    // quando o transcript não tem marcação.
+    let rendered = segments
+        .filter(|s| !s.is_empty())
+        .map(render_with_speakers)
+        .filter(|s| !s.is_empty());
+    let transcript_for_prompt: String = match &rendered {
+        Some(s) => {
+            system.push_str(
+                "\n\nA transcrição abaixo está marcada com rótulos de falante:\n\
+                - `[Eu]` = quem está usando o app (áudio do microfone)\n\
+                - `[Outros]` = demais participantes (áudio do sistema, ex: Teams/Zoom)\n\
+                Use os rótulos para atribuir decisões, perguntas e ações ao lado correto."
+            );
+            s.clone()
+        }
+        None => transcript.to_string(),
+    };
+
     let ctx = extra_context.trim();
     if !ctx.is_empty() {
         system.push_str("\n\nContexto adicional fornecido pelo usuário (use para enquadrar o resumo):\n");
@@ -229,9 +299,21 @@ pub async fn generate_summary(
         system.push_str("\n\nVocabulário (termos próprios, siglas e nomes que o transcritor pode ter grafado errado — use a grafia correta no resumo):\n");
         system.push_str(vocab);
     }
+    let focus_trimmed = focus.trim();
+    if !focus_trimmed.is_empty() {
+        system.push_str(
+            "\n\nPRIORIDADE DO USUÁRIO: dê ênfase substancial e detalhada ao seguinte \
+            tópico/parte da reunião — esta é a parte que o usuário mais quer ver no resumo:\n"
+        );
+        system.push_str(focus_trimmed);
+        system.push_str(
+            "\n\nOs demais assuntos da reunião devem ser tratados de forma sucinta \
+            (uma a duas frases cada), mas não omita decisões ou ações importantes."
+        );
+    }
 
     let user = format!(
-        "Analise a transcrição abaixo e gere o resumo JSON:\n\n---\n{transcript}\n---"
+        "Analise a transcrição abaixo e gere o resumo JSON:\n\n---\n{transcript_for_prompt}\n---"
     );
 
     let content = call_gpt(&system, &user, api_key, model, 3000, endpoint).await?;

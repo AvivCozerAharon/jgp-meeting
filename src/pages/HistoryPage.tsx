@@ -216,7 +216,7 @@ interface MeetingDetailViewProps {
   meeting: Meeting;
   allTags: Tag[];
   onBack: () => void;
-  onGenerateSummary: (id: string) => Promise<void>;
+  onGenerateSummary: (id: string, focus?: string) => Promise<void>;
   isGeneratingSummary: boolean;
   error: string | null;
   onClearError: () => void;
@@ -504,7 +504,7 @@ const MeetingDetailView: React.FC<MeetingDetailViewProps> = ({
               summary={meeting.summary}
               status={summaryStatus}
               error={error}
-              onGenerate={() => onGenerateSummary(meeting.id)}
+              onGenerate={(focus) => onGenerateSummary(meeting.id, focus)}
               canGenerate={!!(meeting.transcript || meeting.segments?.length)}
               className="flex-1 min-h-0"
             />

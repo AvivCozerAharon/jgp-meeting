@@ -6,13 +6,15 @@ export async function generateSummary(
   transcript: string,
   apiKey: string,
   model?: string,
-  baseUrl?: string
+  baseUrl?: string,
+  focus?: string
 ): Promise<MeetingSummary> {
   return await invoke<MeetingSummary>("generate_summary", {
     transcript,
     apiKey,
     model: model ?? "gpt-4o-mini",
     baseUrl: baseUrl ?? null,
+    focus: focus && focus.trim() ? focus : null,
   });
 }
 
@@ -20,13 +22,15 @@ export async function generateAndSaveSummary(
   meetingId: string,
   apiKey: string,
   model?: string,
-  baseUrl?: string
+  baseUrl?: string,
+  focus?: string
 ): Promise<MeetingSummary> {
   return await invoke<MeetingSummary>("generate_and_save_summary", {
     meetingId,
     apiKey,
     model: model ?? "gpt-4o-mini",
     baseUrl: baseUrl ?? null,
+    focus: focus && focus.trim() ? focus : null,
   });
 }
 

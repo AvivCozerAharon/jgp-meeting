@@ -49,8 +49,8 @@ export interface MeetingHistoryActions {
   closeMeeting: () => void;
   /** Remove uma reunião */
   remove: (id: string) => Promise<void>;
-  /** Gera o resumo de uma reunião existente */
-  generateSummary: (meetingId: string) => Promise<void>;
+  /** Gera o resumo de uma reunião existente. `focus` opcional dá ênfase a um tópico. */
+  generateSummary: (meetingId: string, focus?: string) => Promise<void>;
   /** Limpa o erro */
   clearError: () => void;
   /** Feature 16: atualiza o filtro de busca */
@@ -166,7 +166,7 @@ export function useMeetingHistory(): [MeetingHistoryState, MeetingHistoryActions
     [selectedMeeting]
   );
 
-  const generateSummary = useCallback(async (meetingId: string) => {
+  const generateSummary = useCallback(async (meetingId: string, focus?: string) => {
     setIsGeneratingSummary(true);
     setError(null);
     try {
@@ -179,7 +179,7 @@ export function useMeetingHistory(): [MeetingHistoryState, MeetingHistoryActions
             : "Chave da API OpenAI não configurada."
         );
       }
-      const summary = await generateAndSaveSummary(meetingId, apiKey, settings.summary_model, baseUrl);
+      const summary = await generateAndSaveSummary(meetingId, apiKey, settings.summary_model, baseUrl, focus);
 
       // Atualiza a reunião na lista e no detalhe
       setAllMeetings((prev) =>

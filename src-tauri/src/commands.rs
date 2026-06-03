@@ -818,6 +818,7 @@ pub async fn stop_capture(
         let (api_key, endpoint_str) = summary_credentials(&settings);
         if !api_key.is_empty() {
             let transcript     = meeting.transcript.clone();
+            let segments       = meeting.segments.clone();
             let model          = settings.summary_model.clone();
             let meeting_type   = meeting.meeting_type.clone().unwrap_or_default();
             let meeting_id     = id.clone();
@@ -830,7 +831,8 @@ pub async fn stop_capture(
                 log::info!("Auto-resumo iniciado para reunião {meeting_id}");
                 let _ = app_auto.emit("auto-summary-loading", &meeting_id);
 
-                match ai::generate_summary(&transcript, &api_key, &model, &meeting_type, &endpoint_owned, &extra_context, &vocabulary).await {
+                let segs_ref = segments.as_deref();
+                match ai::generate_summary(&transcript, segs_ref, &api_key, &model, &meeting_type, &endpoint_owned, &extra_context, &vocabulary, "").await {
                     Ok(summary) => {
                         if let Ok(mut m) = storage::load_meeting(&meeting_id) {
                             m.summary = Some(summary.clone());
@@ -1565,6 +1567,7 @@ pub async fn get_current_transcript(state: State<'_, AppState>) -> Result<String
 // ─── Comandos: Resumo IA ──────────────────────────────────────────────────────
 
 /// Gera um resumo usando o template do tipo de reunião (Feature 8).
+/// `focus`: tópico opcional para o resumo enfatizar; demais assuntos ficam sucintos.
 #[tauri::command]
 pub async fn generate_summary(
     transcript: String,
@@ -1572,6 +1575,7 @@ pub async fn generate_summary(
     model: Option<String>,
     meeting_type: Option<MeetingType>,
     base_url: Option<String>,
+    focus: Option<String>,
 ) -> Result<MeetingSummary, String> {
     if transcript.trim().is_empty() {
         return Err("Transcrição vazia".to_string());
@@ -1581,18 +1585,33 @@ pub async fn generate_summary(
     let endpoint = base_url.as_deref().unwrap_or(ai::OPENAI_ENDPOINT);
     // Hints (whisper_prompt + whisper_glossary) movidos do Whisper para o resumo.
     let settings = storage::load_settings().unwrap_or_default();
-    ai::generate_summary(&transcript, &api_key, &model, &mt, endpoint, &settings.whisper_prompt, &settings.whisper_glossary)
-        .await
-        .map_err(|e| format!("Erro ao gerar resumo: {e}"))
+    let focus_str = focus.unwrap_or_default();
+    // Sem segments aqui: este comando recebe só o transcript flat. O modo speaker-aware
+    // é usado por generate_and_save_summary (que tem acesso ao Meeting completo).
+    ai::generate_summary(
+        &transcript,
+        None,
+        &api_key,
+        &model,
+        &mt,
+        endpoint,
+        &settings.whisper_prompt,
+        &settings.whisper_glossary,
+        &focus_str,
+    )
+    .await
+    .map_err(|e| format!("Erro ao gerar resumo: {e}"))
 }
 
 /// Gera e salva o resumo de uma reunião do histórico.
+/// `focus`: tópico opcional para o resumo enfatizar.
 #[tauri::command]
 pub async fn generate_and_save_summary(
     meeting_id: String,
     api_key: String,
     model: Option<String>,
     base_url: Option<String>,
+    focus: Option<String>,
 ) -> Result<MeetingSummary, String> {
     let mut meeting =
         storage::load_meeting(&meeting_id).map_err(|e| format!("Reunião não encontrada: {e}"))?;
@@ -1601,10 +1620,22 @@ pub async fn generate_and_save_summary(
     let mt = meeting.meeting_type.clone().unwrap_or_default();
     let endpoint = base_url.as_deref().unwrap_or(ai::OPENAI_ENDPOINT);
     let settings = storage::load_settings().unwrap_or_default();
+    let focus_str = focus.unwrap_or_default();
+    let segs_ref = meeting.segments.as_deref();
 
-    let summary = ai::generate_summary(&meeting.transcript, &api_key, &model, &mt, endpoint, &settings.whisper_prompt, &settings.whisper_glossary)
-        .await
-        .map_err(|e| format!("Erro ao gerar resumo: {e}"))?;
+    let summary = ai::generate_summary(
+        &meeting.transcript,
+        segs_ref,
+        &api_key,
+        &model,
+        &mt,
+        endpoint,
+        &settings.whisper_prompt,
+        &settings.whisper_glossary,
+        &focus_str,
+    )
+    .await
+    .map_err(|e| format!("Erro ao gerar resumo: {e}"))?;
 
     meeting.summary = Some(summary.clone());
     storage::save_meeting(&meeting).map_err(|e| format!("Erro ao salvar: {e}"))?;

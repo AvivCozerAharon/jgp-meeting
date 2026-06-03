@@ -1,11 +1,12 @@
 // components/SummaryPanel.tsx
 // Painel de resumo da reunião: cards organizados por categoria.
 
-import React from "react";
+import React, { useState } from "react";
 import clsx from "clsx";
 import {
   Sparkles,
   AlertCircle,
+  Target,
 } from "lucide-react";
 import type { MeetingSummary, SummaryStatus } from "@/types";
 import { Spinner } from "./LoadingSpinner";
@@ -14,7 +15,8 @@ interface SummaryPanelProps {
   summary: MeetingSummary | null;
   status: SummaryStatus;
   error?: string | null;
-  onGenerate: () => void;
+  /** Chamado com o texto de foco (vazio = sem foco). */
+  onGenerate: (focus: string) => void;
   canGenerate?: boolean;
   className?: string;
 }
@@ -29,6 +31,7 @@ export const SummaryPanel: React.FC<SummaryPanelProps> = ({
 }) => {
   const isLoading = status === "loading";
   const hasSummary = status === "done" && summary;
+  const [focus, setFocus] = useState("");
 
   return (
     <div
@@ -50,7 +53,7 @@ export const SummaryPanel: React.FC<SummaryPanelProps> = ({
 
         {!hasSummary && (
           <button
-            onClick={onGenerate}
+            onClick={() => onGenerate(focus)}
             disabled={!canGenerate || isLoading}
             className={clsx(
               "flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold",
@@ -76,7 +79,7 @@ export const SummaryPanel: React.FC<SummaryPanelProps> = ({
 
         {hasSummary && (
           <button
-            onClick={onGenerate}
+            onClick={() => onGenerate(focus)}
             disabled={isLoading}
             className="text-xs text-primary-500 hover:text-primary-400 font-medium transition-colors"
           >
@@ -84,6 +87,35 @@ export const SummaryPanel: React.FC<SummaryPanelProps> = ({
           </button>
         )}
       </div>
+
+      {/* Input de foco — sempre visível quando ainda não há resumo OU em regen */}
+      {!isLoading && (
+        <div className="px-4 py-3 border-b border-surface-100 dark:border-surface-700/50 flex-shrink-0 space-y-1.5">
+          <label className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-surface-500 dark:text-surface-400">
+            <Target className="w-3 h-3" />
+            Foco do resumo (opcional)
+          </label>
+          <input
+            type="text"
+            value={focus}
+            onChange={(e) => setFocus(e.target.value)}
+            placeholder="Ex: decisões sobre o follow-on da Régia"
+            disabled={!canGenerate}
+            className={clsx(
+              "w-full px-2.5 py-1.5 rounded-lg text-xs",
+              "bg-surface-50 dark:bg-surface-900/50",
+              "border border-surface-200 dark:border-surface-700",
+              "text-surface-700 dark:text-surface-200",
+              "placeholder:text-surface-400 dark:placeholder:text-surface-500",
+              "focus:outline-none focus:ring-2 focus:ring-primary-500/40 focus:border-primary-400",
+              "disabled:opacity-50 disabled:cursor-not-allowed"
+            )}
+          />
+          <p className="text-[10px] text-surface-400 dark:text-surface-500 leading-snug">
+            Quando preenchido, o resumo detalha esta parte e trata o resto de forma sucinta.
+          </p>
+        </div>
+      )}
 
       {/* Conteúdo */}
       <div className="flex-1 overflow-y-auto p-4 min-h-0">
